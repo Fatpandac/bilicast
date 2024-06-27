@@ -1,0 +1,28 @@
+name: Pytest Check
+
+on:
+  push:
+    paths:
+      - 'src'
+  pull_request:
+    paths:
+      - 'src'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rye
+        uses: sbarrios93/rye-rust-action@v0.1.0
+        id: rye-installer
+
+      - name: Installs dependencies
+        run: |
+          rye sync
+      - name: Run Pytest
+        run: |
+          rye run test
