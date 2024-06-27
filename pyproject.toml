@@ -5,7 +5,11 @@ description = "Add your description here"
 authors = [
     { name = "Fatpandac", email = "i@fatpandac.com" }
 ]
-dependencies = []
+dependencies = [
+    "bilix>=0.18.8",
+    "feedgen>=1.0.0",
+    "fastapi>=0.111.0",
+]
 readme = "README.md"
 requires-python = ">= 3.8"
 
