@@ -57,3 +57,10 @@ def __update_podcast(podcast):
     )
     conn.commit()
     conn.close()
+
+
+def get_all_podcasts():
+    _, c = __connect_to_database()
+    c.execute("SELECT * FROM podcast")
+    all_podcasts = c.fetchall()
+    return all_podcasts
