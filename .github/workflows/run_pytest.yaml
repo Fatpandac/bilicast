@@ -16,9 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Rye
-        uses: sbarrios93/rye-rust-action@v0.1.0
-        id: rye-installer
+      - name: Install the latest version of rye
+        uses: eifinger/setup-rye@v3
 
       - name: Installs dependencies
         run: |

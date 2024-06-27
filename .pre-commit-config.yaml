@@ -23,7 +23,7 @@ repos:
     hooks:
       - id: pytest
         name: Check pytest
-        entry: pytest --cov=bilicast --cov-report=html --cov-fail-under=90 --cov-config ./tests/.coveragerc
+        entry: pytest --cov=src --cov-report=html --cov-fail-under=90
         pass_filenames: false
         language: system
         types: [python]
