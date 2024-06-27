@@ -111,6 +111,8 @@ pyyaml==6.0.1
 rich==13.7.1
     # via bilix
     # via typer
+schedule==1.2.2
+    # via bilicast
 shellingham==1.5.4
     # via typer
 six==1.16.0

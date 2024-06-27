@@ -9,11 +9,13 @@ dependencies = [
     "bilix>=0.18.8",
     "feedgen>=1.0.0",
     "fastapi>=0.111.0",
+    "schedule>=1.2.2",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
 
 [tool.rye.scripts]
+dev = "python src/main.py"
 test = "pytest --cov=src --cov-report=html --cov-fail-under=90"
 
 [project.scripts]
