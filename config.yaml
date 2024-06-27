@@ -1,0 +1,14 @@
+podcasts:
+  - name: bilicast1
+    url: https://space.bilibili.com/1780480185/channel/collectiondetail
+    update_period_cron: '*/1 * * * *'
+    keep_latest: 10
+    sort_by: date
+    sort_order: desc
+
+  - name: bilicast2
+    url: https://space.bilibili.com/1780480185/channel/collectiondetail
+    update_period_cron: '*/2 * * * *'
+    keep_latest: 20
+    sort_by: date
+    sort_order: asc

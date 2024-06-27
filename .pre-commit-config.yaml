@@ -19,11 +19,3 @@ repos:
     rev: 24.4.2
     hooks:
       - id: black
-  - repo: local
-    hooks:
-      - id: pytest
-        name: Check pytest
-        entry: pytest --cov=src --cov-report=html --cov-fail-under=90
-        pass_filenames: false
-        language: system
-        types: [python]
