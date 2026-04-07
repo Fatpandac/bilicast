@@ -111,13 +111,12 @@ async def __run(podcast: Podcast):
         if exists:
             continue
 
-        async with httpx.AsyncClient(**api.dft_client_settings) as client:
-            async with DownloaderBilibili(client=client, hierarchy=False) as downloader:
-                try:
-                    file_name = await __download_one(downloader, episode, target_dir)
-                except Exception as e:
-                    log.exception(f"下载失败：{podcast_name} / {episode['episode_id']}: {e}")
-                    continue
+        try:
+            async with DownloaderBilibili(hierarchy=False) as downloader:
+                file_name = await __download_one(downloader, episode, target_dir)
+        except Exception as e:
+            log.exception(f"下载失败：{podcast_name} / {episode['episode_id']}: {e}")
+            continue
 
         if not file_name:
             log.warning(f"{podcast_name} 下载未产生文件：{episode['episode_id']}")
