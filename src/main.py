@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import mimetypes
 import logging
+import asyncio
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from feedgen.feed import FeedGenerator
 from src.config import check_config_file, get_config
 from src.database import get_episodes, init_database
+from src.downloader import run_downloader
 from src.jobs import start_cron_jobs
 
 
@@ -28,6 +30,8 @@ log = logging.getLogger(__name__)
 async def on_startup() -> None:
     check_config_file()
     init_database()
+    config = get_config()
+    await asyncio.gather(*[asyncio.to_thread(run_downloader, podcast) for podcast in config["podcasts"]])
     log.debug("Database initialized")
     start_cron_jobs()
 
