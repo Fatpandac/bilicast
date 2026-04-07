@@ -5,6 +5,7 @@ import mimetypes
 import logging
 import asyncio
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow `uv run src/main.py` (script mode) to import project package `src.*`.
@@ -111,7 +112,14 @@ async def podcast_rss(name: str, request: Request):
             entry.description(episode["description"])
         entry.enclosure(str(episode_url), 0, media_type or "audio/mpeg")
         if episode["published_at"] or episode["created_at"]:
-            entry.pubDate(episode["published_at"] or episode["created_at"])
+            raw_pub_time = episode["published_at"] or episode["created_at"]
+            try:
+                published_at = datetime.fromisoformat(str(raw_pub_time))
+            except ValueError:
+                published_at = datetime.strptime(str(raw_pub_time), "%Y-%m-%d %H:%M:%S")
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=timezone.utc)
+            entry.published(published_at)
 
     return Response(content=feed.rss_str(pretty=True), media_type="application/rss+xml")
 
