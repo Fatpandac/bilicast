@@ -17,6 +17,10 @@ def start_cron_jobs():
         scheduler.add_job(
             run_downloader,
             CronTrigger.from_crontab(podcast["update_period_cron"]),
+            args=[podcast],
             id=podcast["name"],
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
         )
     scheduler.start()

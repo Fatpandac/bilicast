@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
+import logging
 import sqlite3
+from pathlib import Path
 
 from src.config import get_config
 
-config = get_config()
+log = logging.getLogger(__name__)
+
+__databasePath = "database.db"
 
 
 def __connect_to_database() -> tuple[sqlite3.Connection, sqlite3.Cursor]:
-    conn = sqlite3.connect("database.db")
+    conn = sqlite3.connect(__databasePath)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     return conn, c
 
@@ -28,21 +33,29 @@ def init_database():
     )
     c.execute(
         """
-            CREATE TABLE IF NOT EXISTS downloaded (
-                id integer primary key autoincrement,
-                name text,
-                url text,
-                date text default (datetime('now', 'localtime'))
-            )
-            """
+        CREATE TABLE IF NOT EXISTS episode (
+            id integer primary key autoincrement,
+            podcast_name text not null,
+            episode_id text not null,
+            title text,
+            description text,
+            source_url text,
+            file_name text not null,
+            published_at text,
+            created_at text default (datetime('now', 'localtime')),
+            foreign key (podcast_name) references podcast(name),
+            unique(podcast_name, episode_id)
+        )
+        """
     )
+    config = get_config()
     for podcast in config["podcasts"]:
-        __update_podcast(podcast)
+        __upsert_podcast(podcast)
     conn.commit()
     conn.close()
 
 
-def __update_podcast(podcast):
+def __upsert_podcast(podcast):
     conn, c = __connect_to_database()
     c.execute(
         "INSERT OR REPLACE INTO podcast VALUES (?, ?, ?, ?, ?, ?)",
@@ -59,8 +72,118 @@ def __update_podcast(podcast):
     conn.close()
 
 
-def get_all_podcasts():
+def get_all_podcasts() -> list[dict]:
     _, c = __connect_to_database()
     c.execute("SELECT * FROM podcast")
-    all_podcasts = c.fetchall()
-    return all_podcasts
+    podcasts = [dict(row) for row in c.fetchall()]
+    c.connection.close()
+    return podcasts
+
+
+def get_podcast(name: str) -> dict | None:
+    _, c = __connect_to_database()
+    c.execute("SELECT * FROM podcast WHERE name = ?", (name,))
+    podcast = c.fetchone()
+    c.connection.close()
+    return dict(podcast) if podcast else None
+
+
+def get_podcast_by_episode(name: str, episode_id: str) -> dict | None:
+    _, c = __connect_to_database()
+    c.execute("SELECT * FROM episode WHERE podcast_name = ? AND episode_id = ?", (name, episode_id))
+    episode = c.fetchone()
+    c.connection.close()
+    return dict(episode) if episode else None
+
+
+def save_episode(
+    podcast_name: str,
+    episode_id: str,
+    title: str,
+    source_url: str,
+    file_name: str,
+    description: str | None = None,
+    published_at: str | None = None,
+):
+    conn, c = __connect_to_database()
+    c.execute(
+        """
+        INSERT OR IGNORE INTO episode (podcast_name, episode_id, title, description, source_url, file_name, published_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            podcast_name,
+            episode_id,
+            title,
+            description,
+            source_url,
+            file_name,
+            published_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_episodes(podcast_name: str, limit: int | None = None) -> list[dict]:
+    conn, c = __connect_to_database()
+    if limit:
+        c.execute(
+            """
+            SELECT * FROM episode
+            WHERE podcast_name = ?
+            ORDER BY COALESCE(published_at, created_at) DESC
+            LIMIT ?
+            """,
+            (podcast_name, limit),
+        )
+    else:
+        c.execute(
+            """
+            SELECT * FROM episode
+            WHERE podcast_name = ?
+            ORDER BY COALESCE(published_at, created_at) DESC
+            """,
+            (podcast_name,),
+        )
+    episodes = [dict(row) for row in c.fetchall()]
+    c.connection.close()
+    return episodes
+
+
+def count_episodes_by_podcast(podcast_name: str) -> int:
+    conn, c = __connect_to_database()
+    c.execute("SELECT COUNT(*) as c FROM episode WHERE podcast_name = ?", (podcast_name,))
+    count = c.fetchone()[0]
+    c.connection.close()
+    return int(count)
+
+
+def cleanup_old_episodes(podcast_name: str, keep_latest: int) -> list[str]:
+    if keep_latest <= 0:
+        return []
+
+    conn, c = __connect_to_database()
+    c.execute(
+        """
+        SELECT id, file_name FROM episode
+        WHERE podcast_name = ?
+        ORDER BY COALESCE(published_at, created_at) DESC
+        """,
+        (podcast_name,),
+    )
+    rows = c.fetchall()
+    if len(rows) <= keep_latest:
+        conn.close()
+        return []
+
+    removed_files: list[str] = []
+    removed_ids: list[int] = []
+    for row in rows[keep_latest:]:
+        removed_ids.append(int(row["id"]))
+        removed_files.append(str(row["file_name"]))
+
+    c.executemany("DELETE FROM episode WHERE id = ?", [(i,) for i in removed_ids])
+    conn.commit()
+    conn.close()
+    return removed_files
