@@ -24,11 +24,12 @@ __configFile = "config.yaml"
 
 
 def __get_config_file() -> str:
-    if Path("config.yaml").exists():
-        return "config.yaml"
-    if Path("config.yaml.example").exists():
-        return "config.yaml.example"
-    raise FileNotFoundError("config.yaml or config.yaml.example is required")
+    config_path = Path(__file__).resolve().parents[1] / __configFile
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "Missing config.yaml. 请先复制 config.yaml.example 为 config.yaml 并按需修改后重试。"
+        )
+    return str(config_path)
 
 
 def __check_podcast_name_is_unique(podcasts: list[Podcast]):
