@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import logging
+import sys
+from pathlib import Path
+
+# Allow `uv run src/main.py` (script mode) to import project package `src.*`.
+_project_root = Path(__file__).resolve().parents[1]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import check_config_file, get_config
@@ -43,3 +53,9 @@ async def podcasts(name: str):
         return {"message": f"Hello {name}!"}
     else:
         return {"message": f"Podcast {name} not found"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")

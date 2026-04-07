@@ -14,22 +14,14 @@ dependencies = [
     "apscheduler>=3.10.4",
 ]
 readme = "README.md"
-requires-python = ">= 3.8"
-
-[tool.rye.scripts]
-dev = "uvicorn --host 0.0.0.0 --reload src.main:app"
-test = "pytest --cov=src --cov-report=html --cov-fail-under=90"
-
-[project.scripts]
-hello = "bilicast:hello"
+requires-python = ">= 3.8.3"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.rye]
-managed = true
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8.2.2",
     "pytest-cov>=5.0.0",
     "pytest-sugar>=1.0.0",
