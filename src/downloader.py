@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from bilix.sites.bilibili import api
@@ -30,11 +31,32 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
     url = podcast["url"]
     episodes: list[dict[str, str]] = []
 
+    sid_from_path = None
+    parsed = urlparse(url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    for idx, part in enumerate(path_parts):
+        if part == "lists" and idx + 1 < len(path_parts):
+            sid_from_path = path_parts[idx + 1]
+            break
+    if not sid_from_path:
+        qs_sid = parse_qs(parsed.query).get("sid")
+        if qs_sid and qs_sid[0].isdigit():
+            sid_from_path = qs_sid[0]
+
     async with httpx.AsyncClient(**api.dft_client_settings) as client:
-        if "series" in url:
+        if sid_from_path or "collection" in url:
+            sid = sid_from_path
+            try:
+                _, _, bvids = await api.get_collect_info(client, sid if sid else url)
+            except Exception:
+                if "series" in url:
+                    _, _, bvids = await api.get_list_info(client, url)
+                elif sid:
+                    _, _, bvids = await api.get_list_info(client, sid)
+                else:
+                    raise ValueError(f"Unsupported bilibili URL: {url}")
+        elif "series" in url:
             _, _, bvids = await api.get_list_info(client, url)
-        elif "collection" in url:
-            _, _, bvids = await api.get_collect_info(client, url)
         else:
             raise ValueError(f"Unsupported bilibili URL: {url}")
 
@@ -68,7 +90,6 @@ async def __download_one(
         episode["source_url"],
         path=target_dir,
         only_audio=True,
-        hierarchy=False,
     )
     after_files = __audio_files_in(target_dir)
     downloaded = after_files - before_files
