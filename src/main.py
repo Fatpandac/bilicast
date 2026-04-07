@@ -1,19 +1,10 @@
 # -*- coding: utf-8 -*-
-from __future__ import annotations
-
 import mimetypes
 import logging
 import asyncio
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
-
-# Allow `uv run src/main.py` (script mode) to import project package `src.*`.
-_project_root = Path(__file__).resolve().parents[1]
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -155,7 +146,11 @@ async def podcast_rss(name: str, request: Request):
     return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
 
 
-if __name__ == "__main__":
+def main():
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
+
+
+if __name__ == "__main__":
+    main()
