@@ -48,6 +48,10 @@ def init_database():
         )
         """
     )
+    c.execute("PRAGMA table_info(episode)")
+    existing_episode_cols = {row[1] for row in c.fetchall()}
+    if "cover_image_url" not in existing_episode_cols:
+        c.execute("ALTER TABLE episode ADD COLUMN cover_image_url text")
     config = get_config()
     for podcast in config["podcasts"]:
         __upsert_podcast(podcast)
@@ -104,12 +108,13 @@ def save_episode(
     file_name: str,
     description: str | None = None,
     published_at: str | None = None,
+    cover_image_url: str | None = None,
 ):
     conn, c = __connect_to_database()
     c.execute(
         """
-        INSERT OR IGNORE INTO episode (podcast_name, episode_id, title, description, source_url, file_name, published_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO episode (podcast_name, episode_id, title, description, source_url, file_name, published_at, cover_image_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             podcast_name,
@@ -119,6 +124,7 @@ def save_episode(
             source_url,
             file_name,
             published_at,
+            cover_image_url,
         ),
     )
     conn.commit()

@@ -71,6 +71,7 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
                     "title": video_info.title or bvid,
                     "description": video_info.desc or "",
                     "source_url": video_url,
+                    "cover_image_url": video_info.img_url,
                 }
             )
 
@@ -130,6 +131,7 @@ async def __run(podcast: Podcast):
             source_url=episode["source_url"],
             file_name=file_name,
             published_at=None,
+            cover_image_url=episode.get("cover_image_url"),
         )
         log.info(f"{podcast_name} 保存音频：{file_name}")
 

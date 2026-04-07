@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
+import xml.etree.ElementTree as ET
 
 # Allow `uv run src/main.py` (script mode) to import project package `src.*`.
 _project_root = Path(__file__).resolve().parents[1]
@@ -59,6 +60,30 @@ def _get_podcasts_from_file():
 
 def podcast_exists(name: str):
     return name in list(map(lambda podcast: podcast["name"], _get_podcasts_from_file()))
+
+
+def _append_episode_images(rss_xml: str, episodes: list[dict]) -> str:
+    if not episodes:
+        return rss_xml
+    try:
+        ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+        root = ET.fromstring(rss_xml.encode("utf-8"))
+        channel = root.find("channel")
+        if channel is None:
+            return rss_xml
+
+        items = channel.findall("item")
+        for item, episode in zip(items, episodes):
+            cover_image = episode.get("cover_image_url")
+            if not cover_image:
+                continue
+            cover_xml = ET.SubElement(item, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
+            cover_xml.attrib["href"] = cover_image
+
+        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+    except Exception:
+        log.exception("RSS cover image injection failed")
+        return rss_xml
 
 
 @app.get("/podcasts")
@@ -126,6 +151,7 @@ async def podcast_rss(name: str, request: Request):
     rss = feed.rss_str(pretty=True)
     if isinstance(rss, bytes):
         rss = rss.decode("utf-8")
+    rss = _append_episode_images(rss, episodes)
     return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
 
 
