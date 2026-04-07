@@ -17,6 +17,17 @@ A generator for creating Bilibili podcasts.
 例如 RSS 订阅：
 `https://<host>:<port>/rss/bilicast1`
 
+## Neovim + Pyright
+
+如果看到 `apscheduler` 的 `reportMissingImports`，先确认使用项目虚拟环境：
+
+```bash
+uv sync --group dev
+uv run pyright src
+```
+
+项目已新增 `pyrightconfig.json`，会把解释器定位到本仓库 `.venv` 并把 `src` 作为源码搜索路径。修改完依赖或配置后，重启 Neovim 的 Pyright LSP 即可刷新。 
+
 ## 运行
 
 ```bash
