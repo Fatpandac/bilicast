@@ -7,6 +7,7 @@ import asyncio
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 # Allow `uv run src/main.py` (script mode) to import project package `src.*`.
 _project_root = Path(__file__).resolve().parents[1]
@@ -102,7 +103,8 @@ async def podcast_rss(name: str, request: Request):
     feed.id(str(request.url_for("podcast_rss", name=name)))
 
     for episode in episodes:
-        episode_url = request.url_for("podcast_media", name=name, file_name=episode["file_name"])
+        encoded_file_name = quote(episode["file_name"])
+        episode_url = request.url_for("podcast_media", name=name, file_name=encoded_file_name)
         media_type, _ = mimetypes.guess_type(episode["file_name"])
         entry = feed.add_entry()
         entry.id(episode["episode_id"])
@@ -121,7 +123,10 @@ async def podcast_rss(name: str, request: Request):
                 published_at = published_at.replace(tzinfo=timezone.utc)
             entry.published(published_at)
 
-    return Response(content=feed.rss_str(pretty=True), media_type="application/rss+xml")
+    rss = feed.rss_str(pretty=True)
+    if isinstance(rss, bytes):
+        rss = rss.decode("utf-8")
+    return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
 
 
 if __name__ == "__main__":
