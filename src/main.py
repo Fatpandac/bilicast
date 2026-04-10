@@ -4,6 +4,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 from urllib.parse import quote
+from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from fastapi import FastAPI
@@ -83,7 +84,7 @@ async def podcasts():
 
 
 @app.get("/podcasts/{name}", name="podcast_info")
-async def podcasts(name: str, request: Request):
+async def podcasts_with_name(name: str, request: Request):
     if podcast_exists(name):
         config = list(filter(lambda it: it["name"] == name, _get_podcasts_from_file()))[0]
         return {

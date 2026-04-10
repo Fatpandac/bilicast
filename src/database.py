@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
 import sqlite3
-from pathlib import Path
 
 from src.config import get_config
 
