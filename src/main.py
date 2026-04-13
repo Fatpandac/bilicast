@@ -281,12 +281,11 @@ async def podcast_rss(name: str, request: Request):
             if published_at.tzinfo is None:
                 published_at = published_at.replace(tzinfo=timezone.utc)
             entry.published(published_at)
-
     rss = feed.rss_str(pretty=True)
     if isinstance(rss, bytes):
         rss = rss.decode("utf-8")
     rss = _append_channel_and_episode_images(rss, episodes, channel_image)
-    return Response(content=rss, media_type="application/rss+xml")
+    return Response(content=rss.encode("utf-8"), media_type="application/rss+xml; charset=utf-8")
 
 
 def main():
