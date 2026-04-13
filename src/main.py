@@ -91,9 +91,28 @@ def _is_collect_url(url: str) -> bool:
     query = parse_qs(parsed.query)
     if query.get("type", [""])[0] == "season":
         return True
-    if "favlist" in parsed.path and "series" not in parsed.path:
-        return True
     return False
+
+
+def _ensure_rss_root_namespace(rss_xml: str) -> str:
+    marker = "<rss"
+    start = rss_xml.find(marker)
+    if start < 0:
+        return rss_xml
+
+    end = rss_xml.find(">", start)
+    if end < 0:
+        return rss_xml
+
+    root_open_tag = rss_xml[start:end+1]
+    if 'xmlns:atom="' not in root_open_tag:
+        root_open_tag = root_open_tag[:-1] + ' xmlns:atom="http://www.w3.org/2005/Atom">'
+    if 'xmlns:itunes="' not in root_open_tag:
+        root_open_tag = root_open_tag[:-1] + ' xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
+    if ' version="' not in root_open_tag:
+        root_open_tag = root_open_tag[:-1] + ' version="2.0">'
+
+    return rss_xml[:start] + root_open_tag + rss_xml[end+1:]
 
 
 async def _fetch_collect_metadata(client: httpx.AsyncClient, sid: str) -> dict[str, str]:
@@ -160,15 +179,10 @@ async def _get_podcast_metadata(url: str) -> dict[str, str]:
 def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image: str | None = None) -> str:
     try:
         root = ET.fromstring(rss_xml.encode("utf-8"))
-        root_tag = root.tag.rsplit("}", 1)[-1]
-        if root_tag == "rss":
-            root.attrib.setdefault("version", "2.0")
-            root.attrib.setdefault("xmlns:atom", "http://www.w3.org/2005/Atom")
-            root.attrib.setdefault("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         channel = root.find("channel")
         if channel is None:
-            return rss_xml
+            return _ensure_rss_root_namespace(rss_xml)
 
         if image:
             channel_image = channel.find("image")
@@ -193,7 +207,7 @@ def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image
             cover_xml = ET.SubElement(item, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
             cover_xml.attrib["href"] = cover_image
 
-        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+        return _ensure_rss_root_namespace(ET.tostring(root, encoding="unicode", xml_declaration=False))
     except Exception:
         log.exception("RSS cover image injection failed")
         return rss_xml
