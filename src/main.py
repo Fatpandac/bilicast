@@ -6,16 +6,7 @@ from datetime import datetime, timezone
 from time import monotonic
 from urllib.parse import parse_qs, quote, urlparse
 from pathlib import Path
-<<<<<<< HEAD
 import xml.etree.ElementTree as ET
-=======
-from urllib.parse import quote
-
-# Allow `uv run src/main.py` (script mode) to import project package `src.*`.
-_project_root = Path(__file__).resolve().parents[1]
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
->>>>>>> 1fd6bc8 (fix: force UTF-8 RSS output and URL-encode episode file names)
 
 from fastapi import FastAPI
 from fastapi import HTTPException
