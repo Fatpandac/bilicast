@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -16,6 +17,8 @@ from src.database import cleanup_old_episodes, get_podcast_by_episode, get_podca
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_cancel_downloads = threading.Event()
 
 DOWNLOADS_DIR = Path("downloads")
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".flac", ".wav", ".aac", ".ogg", ".opus", ".mp4"}
@@ -116,6 +119,9 @@ async def __run(podcast: Podcast):
     log.info(f"{podcast_name}: 需要下载 {total_to_download} 条")
 
     for index, episode in enumerate(pending_episodes, start=1):
+        if _cancel_downloads.is_set():
+            log.warning(f"{podcast_name}: 已收到退出信号，停止剩余下载")
+            return
         log.info(f"{podcast_name}: 当前下载第 {index} / {total_to_download} 条（{episode['episode_id']}）")
 
         try:
@@ -141,6 +147,8 @@ async def __run(podcast: Podcast):
         )
         log.info(f"{podcast_name} 保存音频：{file_name}")
 
+    _cancel_downloads.clear()
+
     podcast_conf = get_podcast(podcast_name)
     if podcast_conf:
         removed = cleanup_old_episodes(podcast_name, int(podcast_conf["keep_latest"]))
@@ -151,5 +159,17 @@ async def __run(podcast: Podcast):
                     candidate.unlink(missing_ok=True)
 
 
-def run_downloader(podcast: Podcast) -> None:
+async def run_downloader(podcast: Podcast) -> None:
+    await __run(podcast)
+
+
+def run_downloader_sync(podcast: Podcast) -> None:
     asyncio.run(__run(podcast))
+
+
+def request_stop() -> None:
+    _cancel_downloads.set()
+
+
+def request_stop_reset() -> None:
+    _cancel_downloads.clear()

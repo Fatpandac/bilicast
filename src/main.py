@@ -18,8 +18,8 @@ from bilix.sites.bilibili import api
 import httpx
 from src.config import check_config_file, get_config
 from src.database import get_episodes, init_database
-from src.downloader import run_downloader
-from src.jobs import start_cron_jobs
+from src.downloader import run_downloader, request_stop, request_stop_reset
+from src.jobs import start_cron_jobs, stop_cron_jobs
 
 
 log = logging.getLogger(__name__)
@@ -30,10 +30,17 @@ _PODCAST_METADATA_TTL_SECONDS = 3600.0
 async def on_startup() -> None:
     check_config_file()
     init_database()
+    request_stop_reset()
     config = get_config()
-    await asyncio.gather(*[asyncio.to_thread(run_downloader, podcast) for podcast in config["podcasts"]])
+    await asyncio.gather(*[run_downloader(podcast) for podcast in config["podcasts"]])
     log.debug("Database initialized")
     start_cron_jobs()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    request_stop()
+    stop_cron_jobs()
 
 
 app = FastAPI(on_startup=[on_startup], debug=True)
@@ -291,7 +298,7 @@ async def podcast_rss(name: str, request: Request):
 def main():
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug", timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":
