@@ -28,6 +28,17 @@ uv run pyright src
 
 项目已新增 `pyrightconfig.json`，会把解释器定位到本仓库 `.venv` 并把 `src` 作为源码搜索路径。修改完依赖或配置后，重启 Neovim 的 Pyright LSP 即可刷新。 
 
+## 类型检查 Hook
+
+本项目已在 `pre-commit` 中加入提交前类型检查：
+
+```bash
+uv sync --group dev
+pre-commit install
+```
+
+之后每次 `git commit` 会执行 `uv run --with pyright pyright src`，即在提交前进行 Python 类型检查。
+
 ## 运行
 
 ```bash
