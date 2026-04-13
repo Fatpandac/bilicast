@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, urlparse
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Any
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -139,8 +138,14 @@ def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image
             if channel is None:
                 return rss_xml
             if image:
-                image_xml = ET.SubElement(channel, "image")
-                ET.SubElement(image_xml, "url").text = image
+                image_xml = channel.find("image")
+                if image_xml is None:
+                    image_xml = ET.SubElement(channel, "image")
+                image_xml_url = image_xml.find("url")
+                if image_xml_url is None:
+                    ET.SubElement(image_xml, "url").text = image
+                else:
+                    image_xml_url.text = image
             itunes_xml = ET.SubElement(channel, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
             itunes_xml.attrib["href"] = image
             return ET.tostring(root, encoding="unicode", xml_declaration=False)
@@ -159,7 +164,11 @@ def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image
             channel_image = channel.find("image")
             if channel_image is None:
                 channel_image = ET.SubElement(channel, "image")
-            ET.SubElement(channel_image, "url").text = image
+            channel_image_url = channel_image.find("url")
+            if channel_image_url is None:
+                ET.SubElement(channel_image, "url").text = image
+            else:
+                channel_image_url.text = image
 
             itunes_image = channel.find("{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
             if itunes_image is None:
