@@ -3,6 +3,7 @@ import mimetypes
 import logging
 import asyncio
 from datetime import datetime, timezone
+from time import monotonic
 from urllib.parse import parse_qs, quote, urlparse
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -22,6 +23,8 @@ from src.jobs import start_cron_jobs
 
 
 log = logging.getLogger(__name__)
+_PODCAST_METADATA_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+_PODCAST_METADATA_TTL_SECONDS = 3600.0
 
 
 async def on_startup() -> None:
@@ -78,6 +81,21 @@ def _extract_sid(url: str) -> str | None:
     return None
 
 
+def _metadata_cache_key(url: str, sid: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.netloc}|{parsed.path}|{sid}"
+
+
+def _is_collect_url(url: str) -> bool:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if query.get("type", [""])[0] == "season":
+        return True
+    if "favlist" in parsed.path and "series" not in parsed.path:
+        return True
+    return False
+
+
 async def _fetch_collect_metadata(client: httpx.AsyncClient, sid: str) -> dict[str, str]:
     res = await client.get("https://api.bilibili.com/x/space/fav/season/list", params={"season_id": sid})
     res.raise_for_status()
@@ -94,7 +112,7 @@ async def _fetch_collect_metadata(client: httpx.AsyncClient, sid: str) -> dict[s
                 **media,
                 **info,
             },
-            ("cover", "cover_url", "pic", "upper",),
+            ("cover", "cover_url", "pic"),
         ),
     }
 
@@ -116,46 +134,33 @@ async def _get_podcast_metadata(url: str) -> dict[str, str]:
     if not sid:
         return {}
 
+    now = monotonic()
+    cache_key = _metadata_cache_key(url, sid)
+    cache_item = _PODCAST_METADATA_CACHE.get(cache_key)
+    if cache_item is not None:
+        expires_at, cached_data = cache_item
+        if now < expires_at:
+            return cached_data
+
     async with httpx.AsyncClient(**api.dft_client_settings) as client:
         try:
-            if "collection" in url:
-                return await _fetch_collect_metadata(client, sid)
-            if "series" in url:
-                return await _fetch_list_metadata(client, sid)
+            if _is_collect_url(url):
+                data = await _fetch_collect_metadata(client, sid)
+            elif "series" in url:
+                data = await _fetch_list_metadata(client, sid)
+            else:
+                data = {}
+            _PODCAST_METADATA_CACHE[cache_key] = (now + _PODCAST_METADATA_TTL_SECONDS, data)
+            return data
         except Exception:
             log.exception("Bilibili 播客元信息获取失败，回退到配置值")
     return {}
 
 
 def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image: str | None = None) -> str:
-    if not episodes:
-        if not image:
-            return rss_xml
-        try:
-            ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
-            root = ET.fromstring(rss_xml.encode("utf-8"))
-            channel = root.find("channel")
-            if channel is None:
-                return rss_xml
-            if image:
-                image_xml = channel.find("image")
-                if image_xml is None:
-                    image_xml = ET.SubElement(channel, "image")
-                image_xml_url = image_xml.find("url")
-                if image_xml_url is None:
-                    ET.SubElement(image_xml, "url").text = image
-                else:
-                    image_xml_url.text = image
-            itunes_xml = ET.SubElement(channel, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
-            itunes_xml.attrib["href"] = image
-            return ET.tostring(root, encoding="unicode", xml_declaration=False)
-        except Exception:
-            log.exception("RSS channel image injection failed")
-        return rss_xml
-
     try:
-        ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         root = ET.fromstring(rss_xml.encode("utf-8"))
+        ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         channel = root.find("channel")
         if channel is None:
             return rss_xml
@@ -172,21 +177,8 @@ def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image
 
             itunes_image = channel.find("{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
             if itunes_image is None:
-                itunes_image = ET.SubElement(
-                    channel,
-                    "{http://www.itunes.com/dtds/podcast-1.0.dtd}image",
-                )
+                itunes_image = ET.SubElement(channel, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
             itunes_image.attrib["href"] = image
-
-    except Exception:
-        log.exception("RSS channel image injection failed")
-        return rss_xml
-
-    try:
-        root = ET.fromstring(rss_xml.encode("utf-8"))
-        channel = root.find("channel")
-        if channel is None:
-            return rss_xml
 
         items = channel.findall("item")
         for item, episode in zip(items, episodes):
@@ -274,8 +266,6 @@ async def podcast_rss(name: str, request: Request):
     rss = feed.rss_str(pretty=True)
     if isinstance(rss, bytes):
         rss = rss.decode("utf-8")
-    if channel_image:
-        feed.image(channel_image)
     rss = _append_channel_and_episode_images(rss, episodes, channel_image)
     return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
 
