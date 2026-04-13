@@ -14,6 +14,8 @@ from src.config import Podcast
 from src.database import cleanup_old_episodes, get_podcast_by_episode, get_podcast, save_episode
 
 log = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DOWNLOADS_DIR = Path("downloads")
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".flac", ".wav", ".aac", ".ogg", ".opus", ".mp4"}
@@ -107,10 +109,14 @@ async def __run(podcast: Podcast):
     target_dir.mkdir(parents=True, exist_ok=True)
 
     episodes = await __collect_episodes(podcast)
-    for episode in episodes:
-        exists = get_podcast_by_episode(podcast_name, episode["episode_id"])
-        if exists:
-            continue
+    pending_episodes = [
+        episode for episode in episodes if not get_podcast_by_episode(podcast_name, episode["episode_id"])
+    ]
+    total_to_download = len(pending_episodes)
+    log.info(f"{podcast_name}: 需要下载 {total_to_download} 条")
+
+    for index, episode in enumerate(pending_episodes, start=1):
+        log.info(f"{podcast_name}: 当前下载第 {index} / {total_to_download} 条（{episode['episode_id']}）")
 
         try:
             async with DownloaderBilibili(hierarchy=False) as downloader:
