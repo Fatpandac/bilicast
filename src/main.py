@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 _PODCAST_METADATA_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _PODCAST_METADATA_TTL_SECONDS = 3600.0
 
+app = FastAPI(debug=True)
+
 
 async def on_startup() -> None:
     check_config_file()
@@ -37,13 +39,13 @@ async def on_startup() -> None:
     start_cron_jobs()
 
 
-@app.on_event("shutdown")
 async def on_shutdown() -> None:
     request_stop()
     stop_cron_jobs()
 
 
-app = FastAPI(on_startup=[on_startup], debug=True)
+app.add_event_handler("startup", on_startup)
+app.add_event_handler("shutdown", on_shutdown)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
