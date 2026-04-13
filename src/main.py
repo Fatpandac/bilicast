@@ -160,6 +160,11 @@ async def _get_podcast_metadata(url: str) -> dict[str, str]:
 def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image: str | None = None) -> str:
     try:
         root = ET.fromstring(rss_xml.encode("utf-8"))
+        root_tag = root.tag.rsplit("}", 1)[-1]
+        if root_tag == "rss":
+            root.attrib.setdefault("version", "2.0")
+            root.attrib.setdefault("xmlns:atom", "http://www.w3.org/2005/Atom")
+            root.attrib.setdefault("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
         channel = root.find("channel")
         if channel is None:
@@ -267,7 +272,7 @@ async def podcast_rss(name: str, request: Request):
     if isinstance(rss, bytes):
         rss = rss.decode("utf-8")
     rss = _append_channel_and_episode_images(rss, episodes, channel_image)
-    return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
+    return Response(content=rss, media_type="application/rss+xml")
 
 
 def main():
