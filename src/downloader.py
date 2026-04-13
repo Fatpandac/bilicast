@@ -107,10 +107,17 @@ async def __run(podcast: Podcast):
     target_dir.mkdir(parents=True, exist_ok=True)
 
     episodes = await __collect_episodes(podcast)
+    episodes_to_download = []
     for episode in episodes:
         exists = get_podcast_by_episode(podcast_name, episode["episode_id"])
-        if exists:
-            continue
+        if not exists:
+            episodes_to_download.append(episode)
+
+    total = len(episodes_to_download)
+    log.info(f"{podcast_name} 需要下载 {total} 条视频")
+
+    for idx, episode in enumerate(episodes_to_download, start=1):
+        log.info(f"{podcast_name} 正在下载第 {idx}/{total} 条：{episode['episode_id']}")
 
         try:
             async with DownloaderBilibili(hierarchy=False) as downloader:
