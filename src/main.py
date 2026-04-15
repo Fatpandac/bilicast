@@ -2,6 +2,7 @@
 import mimetypes
 import logging
 import asyncio
+import os
 from datetime import datetime, timezone
 from time import monotonic
 from urllib.parse import parse_qs, quote, urlparse
@@ -26,7 +27,7 @@ log = logging.getLogger(__name__)
 _PODCAST_METADATA_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _PODCAST_METADATA_TTL_SECONDS = 3600.0
 
-app = FastAPI(debug=True)
+app = FastAPI(debug=os.getenv("DEBUG", "").lower() in ("1", "true", "yes"))
 
 
 async def on_startup() -> None:
