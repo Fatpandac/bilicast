@@ -261,7 +261,12 @@ async def podcast_rss(name: str, request: Request):
     channel_description = podcast_metadata.get("description") or f"Podcasts from {name}"
     channel_image = podcast_metadata.get("image")
 
-    episodes = get_episodes(name, limit=config["keep_latest"])
+    episodes = get_episodes(
+        name,
+        limit=config["keep_latest"],
+        sort_by=config["sort_by"],
+        sort_order=config["sort_order"],
+    )
     feed = FeedGenerator()
     feed.title(channel_title)
     feed.link(href=str(request.url_for("podcast_info", name=name)))

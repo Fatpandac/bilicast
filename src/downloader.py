@@ -66,8 +66,6 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
         else:
             raise ValueError(f"Unsupported bilibili URL: {url}")
 
-        if podcast["sort_order"] == "asc":
-            bvids = list(reversed(bvids))
         for bvid in bvids:
             video_url = f"https://www.bilibili.com/video/{bvid}"
             video_info = await api.get_video_info(client, video_url)
@@ -97,8 +95,11 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
                 }
             )
 
+    desc = podcast["sort_order"] == "desc"
     if podcast["sort_by"] == "title":
-        episodes.sort(key=lambda item: item["title"], reverse=podcast["sort_order"] == "desc")
+        episodes.sort(key=lambda item: item["title"], reverse=desc)
+    else:  # date
+        episodes.sort(key=lambda item: item.get("published_at") or "", reverse=desc)
 
     return episodes
 

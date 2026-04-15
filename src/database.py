@@ -130,24 +130,31 @@ def save_episode(
     conn.close()
 
 
-def get_episodes(podcast_name: str, limit: int | None = None) -> list[dict]:
+def get_episodes(
+    podcast_name: str,
+    limit: int | None = None,
+    sort_by: str = "date",
+    sort_order: str = "desc",
+) -> list[dict]:
+    order_col = "title" if sort_by == "title" else "COALESCE(published_at, created_at)"
+    order_dir = "DESC" if sort_order == "desc" else "ASC"
     conn, c = __connect_to_database()
     if limit:
         c.execute(
-            """
+            f"""
             SELECT * FROM episode
             WHERE podcast_name = ?
-            ORDER BY COALESCE(published_at, created_at) DESC
+            ORDER BY {order_col} {order_dir}
             LIMIT ?
             """,
             (podcast_name, limit),
         )
     else:
         c.execute(
-            """
+            f"""
             SELECT * FROM episode
             WHERE podcast_name = ?
-            ORDER BY COALESCE(published_at, created_at) DESC
+            ORDER BY {order_col} {order_dir}
             """,
             (podcast_name,),
         )
