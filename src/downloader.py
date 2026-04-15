@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -70,6 +71,21 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
         for bvid in bvids:
             video_url = f"https://www.bilibili.com/video/{bvid}"
             video_info = await api.get_video_info(client, video_url)
+
+            published_at = None
+            try:
+                resp = await client.get(
+                    "https://api.bilibili.com/x/web-interface/view",
+                    params={"bvid": bvid},
+                )
+                vdata = resp.json().get("data") or {}
+                if vdata.get("pubdate"):
+                    published_at = datetime.fromtimestamp(
+                        int(vdata["pubdate"]), tz=timezone.utc
+                    ).isoformat()
+            except Exception:
+                log.debug(f"获取 {bvid} 发布时间失败，跳过")
+
             episodes.append(
                 {
                     "episode_id": video_info.bvid or bvid,
@@ -77,6 +93,7 @@ async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
                     "description": video_info.desc or "",
                     "source_url": video_url,
                     "cover_image_url": video_info.img_url,
+                    "published_at": published_at,
                 }
             )
 
@@ -142,7 +159,7 @@ async def __run(podcast: Podcast):
             description=episode["description"],
             source_url=episode["source_url"],
             file_name=file_name,
-            published_at=None,
+            published_at=episode.get("published_at"),
             cover_image_url=episode.get("cover_image_url"),
         )
         log.info(f"{podcast_name} 保存音频：{file_name}")
