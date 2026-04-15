@@ -32,7 +32,7 @@ _PODCAST_METADATA_TTL_SECONDS = 3600.0
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
+async def lifespan(_app: FastAPI):
     check_config_file()
     init_database()
     request_stop_reset()
