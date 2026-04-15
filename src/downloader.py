@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
 import logging
 import threading
 from datetime import datetime, timezone
@@ -187,6 +189,18 @@ async def __download_one(
     return newest_file.name
 
 
+async def __download_episode(episode: dict[str, str], target_dir: Path) -> str | None:
+    """Self-contained download coroutine, safe to wrap in an asyncio.Task."""
+    async with DownloaderBilibili(hierarchy=False) as downloader:
+        return await __download_one(downloader, episode, target_dir)
+
+
+async def _wait_for_cancel() -> None:
+    """Async-friendly cancel signal: polls threading.Event at 0.2 s intervals."""
+    while not _cancel_downloads.is_set():
+        await asyncio.sleep(0.2)
+
+
 async def __run(podcast: Podcast):
     podcast_name = podcast["name"]
     target_dir = DOWNLOADS_DIR / podcast_name
@@ -215,11 +229,37 @@ async def __run(podcast: Podcast):
             return
         log.info(f"{podcast_name}: 当前下载第 {index} / {total_to_download} 条（{episode['episode_id']}）")
 
+        dl_task = asyncio.create_task(__download_episode(episode, target_dir))
+        cancel_task = asyncio.create_task(_wait_for_cancel())
         try:
-            async with DownloaderBilibili(hierarchy=False) as downloader:
-                file_name = await __download_one(downloader, episode, target_dir)
+            done, _ = await asyncio.wait(
+                {dl_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            # lifespan 被取消（如 Ctrl+C 直接杀进程）
+            _cancel_downloads.set()
+            dl_task.cancel()
+            cancel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.gather(dl_task, cancel_task, return_exceptions=True)
+            raise
+        finally:
+            cancel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cancel_task
+
+        if _cancel_downloads.is_set():
+            dl_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await dl_task
+            log.warning(f"{podcast_name}: 已收到退出信号，停止剩余下载")
+            return
+
+        file_name: str | None
+        try:
+            file_name = dl_task.result()
         except OSError as e:
-            import errno
             if e.errno == errno.ENOSPC:
                 log.error(f"{podcast_name}: 磁盘空间不足，跳过剩余下载")
                 return
