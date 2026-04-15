@@ -75,14 +75,6 @@ def __upsert_podcast(podcast):
     conn.close()
 
 
-def get_all_podcasts() -> list[dict]:
-    _, c = __connect_to_database()
-    c.execute("SELECT * FROM podcast")
-    podcasts = [dict(row) for row in c.fetchall()]
-    c.connection.close()
-    return podcasts
-
-
 def get_podcast(name: str) -> dict | None:
     _, c = __connect_to_database()
     c.execute("SELECT * FROM podcast WHERE name = ?", (name,))

@@ -58,7 +58,8 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"message": "Hello World"}
+    podcasts = _get_podcasts_from_file()
+    return {"status": "ok", "podcast_count": len(podcasts)}
 
 
 def _get_podcasts_from_file():
