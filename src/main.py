@@ -280,7 +280,9 @@ async def podcast_rss(name: str, request: Request):
         entry.link(href=str(episode_url))
         if episode["description"]:
             entry.description(episode["description"])
-        entry.enclosure(str(episode_url), 0, media_type or "audio/mpeg")
+        media_file = Path("downloads") / name / episode["file_name"]
+        file_size = media_file.stat().st_size if media_file.exists() else 0
+        entry.enclosure(str(episode_url), file_size, media_type or "audio/mpeg")
         if episode["published_at"] or episode["created_at"]:
             raw_pub_time = episode["published_at"] or episode["created_at"]
             try:
