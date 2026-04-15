@@ -33,67 +33,85 @@ def __audio_files_in(dirpath: Path) -> set[Path]:
     }
 
 
-async def __collect_episodes(podcast: Podcast) -> list[dict[str, str]]:
-    url = podcast["url"]
-    episodes: list[dict[str, str]] = []
+def _pubtime_to_iso(ts: int | None) -> str | None:
+    if not ts:
+        return None
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
 
-    sid_from_path = None
+
+async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> list[dict]:
+    res = await client.get(
+        "https://api.bilibili.com/x/space/fav/season/list",
+        params={"season_id": sid},
+    )
+    res.raise_for_status()
+    medias = res.json()["data"]["medias"]
+    return [
+        {
+            "episode_id": m["bvid"],
+            "title": m["title"],
+            "description": "",
+            "source_url": f"https://www.bilibili.com/video/{m['bvid']}",
+            "cover_image_url": m.get("cover") or m.get("pic") or "",
+            "published_at": _pubtime_to_iso(m.get("pubtime")),
+        }
+        for m in medias
+    ]
+
+
+async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> list[dict]:
+    meta_res = await client.get(f"https://api.bilibili.com/x/series/series?series_id={sid}")
+    meta = meta_res.json()["data"]["meta"]
+    mid, total = meta["mid"], meta["total"]
+    res = await client.get(
+        "https://api.bilibili.com/x/series/archives",
+        params={"mid": mid, "series_id": sid, "ps": total},
+    )
+    archives = res.json()["data"]["archives"]
+    return [
+        {
+            "episode_id": a["bvid"],
+            "title": a["title"],
+            "description": a.get("desc") or "",
+            "source_url": f"https://www.bilibili.com/video/{a['bvid']}",
+            "cover_image_url": a.get("pic") or a.get("cover") or "",
+            "published_at": _pubtime_to_iso(a.get("pubdate")),
+        }
+        for a in archives
+    ]
+
+
+async def __collect_episodes(podcast: Podcast) -> list[dict]:
+    url = podcast["url"]
+
+    sid = None
     parsed = urlparse(url)
     path_parts = [part for part in parsed.path.split("/") if part]
     for idx, part in enumerate(path_parts):
         if part == "lists" and idx + 1 < len(path_parts):
-            sid_from_path = path_parts[idx + 1]
+            sid = path_parts[idx + 1]
             break
-    if not sid_from_path:
+    if not sid:
         qs_sid = parse_qs(parsed.query).get("sid")
         if qs_sid and qs_sid[0].isdigit():
-            sid_from_path = qs_sid[0]
+            sid = qs_sid[0]
 
     async with httpx.AsyncClient(**api.dft_client_settings) as client:
-        if sid_from_path or "collection" in url:
-            sid = sid_from_path
+        if sid or "collection" in url:
             try:
-                _, _, bvids = await api.get_collect_info(client, sid if sid else url)
+                episodes = await __collect_season_episodes(client, sid or url)
             except Exception:
-                if "series" in url:
-                    _, _, bvids = await api.get_list_info(client, url)
-                elif sid:
-                    _, _, bvids = await api.get_list_info(client, sid)
+                if sid:
+                    episodes = await __collect_series_episodes(client, sid)
                 else:
                     raise ValueError(f"Unsupported bilibili URL: {url}")
         elif "series" in url:
-            _, _, bvids = await api.get_list_info(client, url)
+            qs_sid = parse_qs(parsed.query).get("sid", [None])[0]
+            if not qs_sid:
+                raise ValueError(f"Cannot extract series id from URL: {url}")
+            episodes = await __collect_series_episodes(client, qs_sid)
         else:
             raise ValueError(f"Unsupported bilibili URL: {url}")
-
-        for bvid in bvids:
-            video_url = f"https://www.bilibili.com/video/{bvid}"
-            video_info = await api.get_video_info(client, video_url)
-
-            published_at = None
-            try:
-                resp = await client.get(
-                    "https://api.bilibili.com/x/web-interface/view",
-                    params={"bvid": bvid},
-                )
-                vdata = resp.json().get("data") or {}
-                if vdata.get("pubdate"):
-                    published_at = datetime.fromtimestamp(
-                        int(vdata["pubdate"]), tz=timezone.utc
-                    ).isoformat()
-            except Exception:
-                log.debug(f"获取 {bvid} 发布时间失败，跳过")
-
-            episodes.append(
-                {
-                    "episode_id": video_info.bvid or bvid,
-                    "title": video_info.title or bvid,
-                    "description": video_info.desc or "",
-                    "source_url": video_url,
-                    "cover_image_url": video_info.img_url,
-                    "published_at": published_at,
-                }
-            )
 
     desc = podcast["sort_order"] == "desc"
     if podcast["sort_by"] == "title":
