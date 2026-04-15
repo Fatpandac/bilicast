@@ -53,6 +53,11 @@ def init_database():
     existing_episode_cols = {row[1] for row in c.fetchall()}
     if "cover_image_url" not in existing_episode_cols:
         c.execute("ALTER TABLE episode ADD COLUMN cover_image_url text")
+    c.execute("PRAGMA table_info(podcast)")
+    existing_podcast_cols = {row[1] for row in c.fetchall()}
+    for col in ("channel_title", "channel_description", "channel_image"):
+        if col not in existing_podcast_cols:
+            c.execute(f"ALTER TABLE podcast ADD COLUMN {col} text")
     config = get_config()
     for podcast in config["podcasts"]:
         __upsert_podcast(podcast)
@@ -72,6 +77,25 @@ def __upsert_podcast(podcast):
             podcast["sort_by"],
             podcast["sort_order"],
         ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_podcast_metadata(
+    name: str,
+    channel_title: str | None,
+    channel_description: str | None,
+    channel_image: str | None,
+) -> None:
+    conn, c = __connect_to_database()
+    c.execute(
+        """
+        UPDATE podcast
+        SET channel_title = ?, channel_description = ?, channel_image = ?
+        WHERE name = ?
+        """,
+        (channel_title, channel_description, channel_image, name),
     )
     conn.commit()
     conn.close()

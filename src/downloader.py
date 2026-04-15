@@ -13,7 +13,7 @@ from bilix.sites.bilibili import api
 from bilix.sites.bilibili.downloader import DownloaderBilibili
 
 from src.config import Podcast
-from src.database import cleanup_old_episodes, get_podcast_by_episode, get_podcast, save_episode
+from src.database import cleanup_old_episodes, get_podcast_by_episode, get_podcast, save_episode, update_podcast_metadata
 
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -53,16 +53,24 @@ async def __fetch_video_detail(client: httpx.AsyncClient, bvid: str) -> dict:
         return {"desc": "", "pic": ""}
 
 
-async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> list[dict]:
+async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> tuple[list[dict], dict]:
     res = await client.get(
         "https://api.bilibili.com/x/space/fav/season/list",
         params={"season_id": sid},
     )
     res.raise_for_status()
-    medias = res.json()["data"]["medias"]
+    payload = res.json()["data"]
+    info: dict = payload.get("info", {})
+    medias = payload.get("medias", [])
+
+    channel_meta = {
+        "title": info.get("title") or info.get("name") or "",
+        "description": info.get("intro") or info.get("description") or "",
+        "image": info.get("cover") or info.get("cover_url") or "",
+    }
 
     details = await asyncio.gather(*[__fetch_video_detail(client, m["bvid"]) for m in medias])
-    return [
+    episodes = [
         {
             "episode_id": m["bvid"],
             "title": m["title"],
@@ -73,12 +81,20 @@ async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> list
         }
         for m, detail in zip(medias, details)
     ]
+    return episodes, channel_meta
 
 
-async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> list[dict]:
+async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> tuple[list[dict], dict]:
     meta_res = await client.get(f"https://api.bilibili.com/x/series/series?series_id={sid}")
     meta = meta_res.json()["data"]["meta"]
     mid, total = meta["mid"], meta["total"]
+
+    channel_meta = {
+        "title": meta.get("name") or meta.get("title") or "",
+        "description": meta.get("description") or meta.get("intro") or "",
+        "image": meta.get("cover") or meta.get("cover_url") or "",
+    }
+
     res = await client.get(
         "https://api.bilibili.com/x/series/archives",
         params={"mid": mid, "series_id": sid, "ps": total},
@@ -86,7 +102,7 @@ async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> list
     archives = res.json()["data"]["archives"]
 
     details = await asyncio.gather(*[__fetch_video_detail(client, a["bvid"]) for a in archives])
-    return [
+    episodes = [
         {
             "episode_id": a["bvid"],
             "title": a["title"],
@@ -97,6 +113,7 @@ async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> list
         }
         for a, detail in zip(archives, details)
     ]
+    return episodes, channel_meta
 
 
 async def __collect_episodes(podcast: Podcast) -> list[dict]:
@@ -114,22 +131,31 @@ async def __collect_episodes(podcast: Podcast) -> list[dict]:
         if qs_sid and qs_sid[0].isdigit():
             sid = qs_sid[0]
 
+    channel_meta: dict = {}
     async with httpx.AsyncClient(**api.dft_client_settings) as client:
         if sid or "collection" in url:
             try:
-                episodes = await __collect_season_episodes(client, sid or url)
+                episodes, channel_meta = await __collect_season_episodes(client, sid or url)
             except Exception:
                 if sid:
-                    episodes = await __collect_series_episodes(client, sid)
+                    episodes, channel_meta = await __collect_series_episodes(client, sid)
                 else:
                     raise ValueError(f"Unsupported bilibili URL: {url}")
         elif "series" in url:
             qs_sid = parse_qs(parsed.query).get("sid", [None])[0]
             if not qs_sid:
                 raise ValueError(f"Cannot extract series id from URL: {url}")
-            episodes = await __collect_series_episodes(client, qs_sid)
+            episodes, channel_meta = await __collect_series_episodes(client, qs_sid)
         else:
             raise ValueError(f"Unsupported bilibili URL: {url}")
+
+    if channel_meta.get("title") or channel_meta.get("description") or channel_meta.get("image"):
+        update_podcast_metadata(
+            podcast["name"],
+            channel_meta.get("title") or None,
+            channel_meta.get("description") or None,
+            channel_meta.get("image") or None,
+        )
 
     desc = podcast["sort_order"] == "desc"
     if podcast["sort_by"] == "title":
