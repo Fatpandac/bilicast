@@ -225,10 +225,6 @@ async def run_downloader(podcast: Podcast) -> None:
     await __run(podcast)
 
 
-def run_downloader_sync(podcast: Podcast) -> None:
-    asyncio.run(__run(podcast))
-
-
 def request_stop() -> None:
     _cancel_downloads.set()
 
