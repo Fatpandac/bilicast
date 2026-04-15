@@ -128,6 +128,16 @@ async def __run(podcast: Podcast):
     target_dir = DOWNLOADS_DIR / podcast_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    podcast_conf = get_podcast(podcast_name)
+    if podcast_conf:
+        removed = cleanup_old_episodes(podcast_name, int(podcast_conf["keep_latest"]))
+        if removed:
+            for name in removed:
+                candidate = target_dir / name
+                if candidate.exists():
+                    candidate.unlink(missing_ok=True)
+            log.info(f"{podcast_name}: 下载前清理旧集 {len(removed)} 条以释放空间")
+
     episodes = await __collect_episodes(podcast)
     pending_episodes = [
         episode for episode in episodes if not get_podcast_by_episode(podcast_name, episode["episode_id"])
@@ -144,6 +154,13 @@ async def __run(podcast: Podcast):
         try:
             async with DownloaderBilibili(hierarchy=False) as downloader:
                 file_name = await __download_one(downloader, episode, target_dir)
+        except OSError as e:
+            import errno
+            if e.errno == errno.ENOSPC:
+                log.error(f"{podcast_name}: 磁盘空间不足，跳过剩余下载")
+                return
+            log.exception(f"下载失败：{podcast_name} / {episode['episode_id']}: {e}")
+            continue
         except Exception as e:
             log.exception(f"下载失败：{podcast_name} / {episode['episode_id']}: {e}")
             continue
@@ -165,15 +182,6 @@ async def __run(podcast: Podcast):
         log.info(f"{podcast_name} 保存音频：{file_name}")
 
     _cancel_downloads.clear()
-
-    podcast_conf = get_podcast(podcast_name)
-    if podcast_conf:
-        removed = cleanup_old_episodes(podcast_name, int(podcast_conf["keep_latest"]))
-        if removed:
-            for name in removed:
-                candidate = target_dir / name
-                if candidate.exists():
-                    candidate.unlink(missing_ok=True)
 
 
 async def run_downloader(podcast: Podcast) -> None:
