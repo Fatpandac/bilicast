@@ -31,15 +31,16 @@ async def lifespan(_app: FastAPI):
     init_database()
     request_stop_reset()
     config = get_config()
-    try:
-        await asyncio.gather(*[run_downloader(podcast) for podcast in config["podcasts"]])
-    except asyncio.CancelledError:
-        request_stop()
-        raise
-    log.debug("Database initialized")
+    download_tasks = [
+        asyncio.create_task(run_downloader(podcast))
+        for podcast in config["podcasts"]
+    ]
     start_cron_jobs()
     yield
     request_stop()
+    for task in download_tasks:
+        task.cancel()
+    await asyncio.gather(*download_tasks, return_exceptions=True)
     stop_cron_jobs()
 
 
