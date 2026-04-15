@@ -18,6 +18,7 @@ from src.database import cleanup_old_episodes, get_podcast_by_episode, get_podca
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("bilix").setLevel(logging.WARNING)
 
 _cancel_downloads = threading.Event()
 
