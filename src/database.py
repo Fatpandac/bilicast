@@ -68,7 +68,16 @@ def init_database():
 def __upsert_podcast(podcast):
     conn, c = __connect_to_database()
     c.execute(
-        "INSERT OR REPLACE INTO podcast VALUES (?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO podcast (name, url, update_period_cron, keep_latest, sort_by, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            url = excluded.url,
+            update_period_cron = excluded.update_period_cron,
+            keep_latest = excluded.keep_latest,
+            sort_by = excluded.sort_by,
+            sort_order = excluded.sort_order
+        """,
         (
             podcast["name"],
             podcast["url"],
