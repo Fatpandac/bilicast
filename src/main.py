@@ -253,7 +253,10 @@ async def podcast_rss(name: str, request: Request):
     config = list(filter(lambda it: it["name"] == name, _get_podcasts_from_file()))[0]
     podcast_metadata = await _get_podcast_metadata(config["url"])
     channel_title = podcast_metadata.get("title") or config["name"]
-    channel_description = podcast_metadata.get("description") or f"Podcasts from {name}"
+    channel_description = (
+        podcast_metadata.get("description")
+        or f"由 bilicast 生成 · https://github.com/Fatpandac/bilicast"
+    )
     channel_image = podcast_metadata.get("image")
 
     episodes = get_episodes(
