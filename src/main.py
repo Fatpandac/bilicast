@@ -178,6 +178,7 @@ def _build_rss(
     name: str,
     request: Request,
 ) -> bytes:
+    _BRANDING = "由 bilicast 生成 · https://github.com/Fatpandac/bilicast"
     fg = FeedGenerator()
     fg.load_extension("podcast")
     fg.id(channel_rss_url)
@@ -199,8 +200,8 @@ def _build_rss(
         fe.title(ep["title"] or ep["file_name"])
         fe.link(href=ep_url)
         fe.enclosure(ep_url, file_size, media_type or "audio/mpeg")
-        if ep.get("description"):
-            fe.description(ep["description"])
+        desc = ep.get("description") or ""
+        fe.description(f"{desc}\n\n{_BRANDING}" if desc else _BRANDING)
         if ep.get("cover_image_url"):
             fe.podcast.itunes_image(ep["cover_image_url"])  # type: ignore[attr-defined]
 
