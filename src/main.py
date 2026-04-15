@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import mimetypes
 import logging
 import asyncio
@@ -30,7 +32,7 @@ _PODCAST_METADATA_TTL_SECONDS = 3600.0
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):  # noqa: ARG001
     check_config_file()
     init_database()
     request_stop_reset()
