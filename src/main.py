@@ -150,13 +150,13 @@ async def podcast_rss(name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Podcast {name} not found")
 
     config = list(filter(lambda it: it["name"] == name, _get_podcasts_from_file()))[0]
-    podcast_row = get_podcast(name)
-    channel_title = (podcast_row and podcast_row.get("channel_title")) or config["name"]
-    channel_description = (
-        (podcast_row and podcast_row.get("channel_description"))
+    podcast_row = get_podcast(name) or {}
+    channel_title: str = podcast_row.get("channel_title") or config["name"]
+    channel_description: str = (
+        podcast_row.get("channel_description")
         or "由 bilicast 生成 · https://github.com/Fatpandac/bilicast"
     )
-    channel_image: str | None = podcast_row and podcast_row.get("channel_image") or None
+    channel_image: str | None = podcast_row.get("channel_image") or None
 
     episodes = get_episodes(
         name,
