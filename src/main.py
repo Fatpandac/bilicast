@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import email.utils
 import mimetypes
 import logging
 import asyncio
@@ -17,9 +18,13 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from feedgen.feed import FeedGenerator
 from bilix.sites.bilibili import api
 import httpx
+
+_ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
+_ATOM_NS = "http://www.w3.org/2005/Atom"
+ET.register_namespace("itunes", _ITUNES_NS)
+ET.register_namespace("atom", _ATOM_NS)
 from src.config import check_config_file, get_config
 from src.database import get_episodes, init_database
 from src.downloader import run_downloader, request_stop, request_stop_reset
@@ -107,26 +112,6 @@ def _is_collect_url(url: str) -> bool:
     return False
 
 
-def _ensure_rss_root_namespace(rss_xml: str) -> str:
-    marker = "<rss"
-    start = rss_xml.find(marker)
-    if start < 0:
-        return rss_xml
-
-    end = rss_xml.find(">", start)
-    if end < 0:
-        return rss_xml
-
-    root_open_tag = rss_xml[start:end+1]
-    if 'xmlns:atom="' not in root_open_tag:
-        root_open_tag = root_open_tag[:-1] + ' xmlns:atom="http://www.w3.org/2005/Atom">'
-    if 'xmlns:itunes="' not in root_open_tag:
-        root_open_tag = root_open_tag[:-1] + ' xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
-    if ' version="' not in root_open_tag:
-        root_open_tag = root_open_tag[:-1] + ' version="2.0">'
-
-    return rss_xml[:start] + root_open_tag + rss_xml[end+1:]
-
 
 async def _fetch_collect_metadata(client: httpx.AsyncClient, sid: str) -> dict[str, str]:
     res = await client.get("https://api.bilibili.com/x/space/fav/season/list", params={"season_id": sid})
@@ -189,41 +174,65 @@ async def _get_podcast_metadata(url: str) -> dict[str, str]:
     return {}
 
 
-def _append_channel_and_episode_images(rss_xml: str, episodes: list[dict], image: str | None = None) -> str:
-    try:
-        root = ET.fromstring(rss_xml.encode("utf-8"))
-        ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
-        channel = root.find("channel")
-        if channel is None:
-            return _ensure_rss_root_namespace(rss_xml)
+def _build_rss(
+    channel_title: str,
+    channel_link: str,
+    channel_rss_url: str,
+    channel_description: str,
+    channel_image: str | None,
+    episodes: list[dict],
+    name: str,
+    request: Request,
+) -> bytes:
+    rss = ET.Element("rss", {"version": "2.0"})
+    ch = ET.SubElement(rss, "channel")
 
-        if image:
-            channel_image = channel.find("image")
-            if channel_image is None:
-                channel_image = ET.SubElement(channel, "image")
-            channel_image_url = channel_image.find("url")
-            if channel_image_url is None:
-                ET.SubElement(channel_image, "url").text = image
-            else:
-                channel_image_url.text = image
+    ET.SubElement(ch, "title").text = channel_title
+    ET.SubElement(ch, "link").text = channel_link
+    ET.SubElement(ch, "description").text = channel_description
+    ET.SubElement(ch, f"{{{_ATOM_NS}}}link", {
+        "href": channel_rss_url, "rel": "self", "type": "application/rss+xml",
+    })
 
-            itunes_image = channel.find("{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
-            if itunes_image is None:
-                itunes_image = ET.SubElement(channel, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
-            itunes_image.attrib["href"] = image
+    if channel_image:
+        img_el = ET.SubElement(ch, "image")
+        ET.SubElement(img_el, "url").text = channel_image
+        ET.SubElement(img_el, "title").text = channel_title
+        ET.SubElement(img_el, "link").text = channel_link
+        ET.SubElement(ch, f"{{{_ITUNES_NS}}}image", {"href": channel_image})
 
-        items = channel.findall("item")
-        for item, episode in zip(items, episodes):
-            cover_image = episode.get("cover_image_url")
-            if not cover_image:
-                continue
-            cover_xml = ET.SubElement(item, "{http://www.itunes.com/dtds/podcast-1.0.dtd}image")
-            cover_xml.attrib["href"] = cover_image
+    for ep in episodes:
+        encoded_name = quote(ep["file_name"])
+        ep_url = str(request.url_for("podcast_media", name=name, file_name=encoded_name))
+        media_type, _ = mimetypes.guess_type(ep["file_name"])
+        media_file = Path("downloads") / name / ep["file_name"]
+        file_size = media_file.stat().st_size if media_file.exists() else 0
 
-        return _ensure_rss_root_namespace(ET.tostring(root, encoding="unicode", xml_declaration=False))
-    except Exception:
-        log.exception("RSS cover image injection failed")
-        return rss_xml
+        item = ET.SubElement(ch, "item")
+        ET.SubElement(item, "title").text = ep["title"] or ep["file_name"]
+        ET.SubElement(item, "link").text = ep_url
+        ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = ep["episode_id"]
+        ET.SubElement(item, "enclosure", {
+            "url": ep_url,
+            "length": str(file_size),
+            "type": media_type or "audio/mpeg",
+        })
+        if ep.get("description"):
+            ET.SubElement(item, "description").text = ep["description"]
+        if ep.get("cover_image_url"):
+            ET.SubElement(item, f"{{{_ITUNES_NS}}}image", {"href": ep["cover_image_url"]})
+
+        raw_pub = ep.get("published_at") or ep.get("created_at")
+        if raw_pub:
+            try:
+                pub_dt = datetime.fromisoformat(str(raw_pub))
+            except ValueError:
+                pub_dt = datetime.strptime(str(raw_pub), "%Y-%m-%d %H:%M:%S")
+            if pub_dt.tzinfo is None:
+                pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+            ET.SubElement(item, "pubDate").text = email.utils.format_datetime(pub_dt)
+
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
 @app.get("/podcasts")
@@ -271,41 +280,20 @@ async def podcast_rss(name: str, request: Request):
         sort_by=config["sort_by"],
         sort_order=config["sort_order"],
     )
-    feed = FeedGenerator()
-    feed.title(channel_title)
-    feed.link(href=str(request.url_for("podcast_info", name=name)))
-    feed.description(channel_description)
-    feed.id(str(request.url_for("podcast_rss", name=name)))
     if not channel_image and episodes:
-        channel_image = episodes[0].get("cover_image_url") or episodes[0].get("cover")
+        channel_image = episodes[0].get("cover_image_url")
 
-    for episode in episodes:
-        encoded_file_name = quote(episode["file_name"])
-        episode_url = request.url_for("podcast_media", name=name, file_name=encoded_file_name)
-        media_type, _ = mimetypes.guess_type(episode["file_name"])
-        entry = feed.add_entry()
-        entry.id(episode["episode_id"])
-        entry.title(episode["title"] or episode["file_name"])
-        entry.link(href=str(episode_url))
-        if episode["description"]:
-            entry.description(episode["description"])
-        media_file = Path("downloads") / name / episode["file_name"]
-        file_size = media_file.stat().st_size if media_file.exists() else 0
-        entry.enclosure(str(episode_url), file_size, media_type or "audio/mpeg")
-        if episode["published_at"] or episode["created_at"]:
-            raw_pub_time = episode["published_at"] or episode["created_at"]
-            try:
-                published_at = datetime.fromisoformat(str(raw_pub_time))
-            except ValueError:
-                published_at = datetime.strptime(str(raw_pub_time), "%Y-%m-%d %H:%M:%S")
-            if published_at.tzinfo is None:
-                published_at = published_at.replace(tzinfo=timezone.utc)
-            entry.published(published_at)
-    rss = feed.rss_str(pretty=True)
-    if isinstance(rss, bytes):
-        rss = rss.decode("utf-8")
-    rss = _append_channel_and_episode_images(rss, episodes, channel_image)
-    return Response(content=rss.encode("utf-8"), media_type="application/rss+xml; charset=utf-8")
+    rss = _build_rss(
+        channel_title=channel_title,
+        channel_link=str(request.url_for("podcast_info", name=name)),
+        channel_rss_url=str(request.url_for("podcast_rss", name=name)),
+        channel_description=channel_description,
+        channel_image=channel_image,
+        episodes=episodes,
+        name=name,
+        request=request,
+    )
+    return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
 
 
 def main():
