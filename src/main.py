@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import email.utils
 import mimetypes
 import logging
 import asyncio
@@ -11,20 +10,15 @@ from datetime import datetime, timezone
 from time import monotonic
 from urllib.parse import parse_qs, quote, urlparse
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from feedgen.feed import FeedGenerator
 from bilix.sites.bilibili import api
 import httpx
-
-_ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
-_ATOM_NS = "http://www.w3.org/2005/Atom"
-ET.register_namespace("itunes", _ITUNES_NS)
-ET.register_namespace("atom", _ATOM_NS)
 from src.config import check_config_file, get_config
 from src.database import get_episodes, init_database
 from src.downloader import run_downloader, request_stop, request_stop_reset
@@ -184,22 +178,14 @@ def _build_rss(
     name: str,
     request: Request,
 ) -> bytes:
-    rss = ET.Element("rss", {"version": "2.0"})
-    ch = ET.SubElement(rss, "channel")
-
-    ET.SubElement(ch, "title").text = channel_title
-    ET.SubElement(ch, "link").text = channel_link
-    ET.SubElement(ch, "description").text = channel_description
-    ET.SubElement(ch, f"{{{_ATOM_NS}}}link", {
-        "href": channel_rss_url, "rel": "self", "type": "application/rss+xml",
-    })
-
+    fg = FeedGenerator()
+    fg.load_extension("podcast")
+    fg.id(channel_rss_url)
+    fg.title(channel_title)
+    fg.link(href=channel_link)
+    fg.description(channel_description)
     if channel_image:
-        img_el = ET.SubElement(ch, "image")
-        ET.SubElement(img_el, "url").text = channel_image
-        ET.SubElement(img_el, "title").text = channel_title
-        ET.SubElement(img_el, "link").text = channel_link
-        ET.SubElement(ch, f"{{{_ITUNES_NS}}}image", {"href": channel_image})
+        fg.podcast.itunes_image(channel_image)  # type: ignore[attr-defined]
 
     for ep in episodes:
         encoded_name = quote(ep["file_name"])
@@ -208,19 +194,15 @@ def _build_rss(
         media_file = Path("downloads") / name / ep["file_name"]
         file_size = media_file.stat().st_size if media_file.exists() else 0
 
-        item = ET.SubElement(ch, "item")
-        ET.SubElement(item, "title").text = ep["title"] or ep["file_name"]
-        ET.SubElement(item, "link").text = ep_url
-        ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = ep["episode_id"]
-        ET.SubElement(item, "enclosure", {
-            "url": ep_url,
-            "length": str(file_size),
-            "type": media_type or "audio/mpeg",
-        })
+        fe = fg.add_entry()
+        fe.id(ep["episode_id"])
+        fe.title(ep["title"] or ep["file_name"])
+        fe.link(href=ep_url)
+        fe.enclosure(ep_url, file_size, media_type or "audio/mpeg")
         if ep.get("description"):
-            ET.SubElement(item, "description").text = ep["description"]
+            fe.description(ep["description"])
         if ep.get("cover_image_url"):
-            ET.SubElement(item, f"{{{_ITUNES_NS}}}image", {"href": ep["cover_image_url"]})
+            fe.podcast.itunes_image(ep["cover_image_url"])  # type: ignore[attr-defined]
 
         raw_pub = ep.get("published_at") or ep.get("created_at")
         if raw_pub:
@@ -230,9 +212,9 @@ def _build_rss(
                 pub_dt = datetime.strptime(str(raw_pub), "%Y-%m-%d %H:%M:%S")
             if pub_dt.tzinfo is None:
                 pub_dt = pub_dt.replace(tzinfo=timezone.utc)
-            ET.SubElement(item, "pubDate").text = email.utils.format_datetime(pub_dt)
+            fe.published(pub_dt)
 
-    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+    return fg.rss_str(pretty=True)
 
 
 @app.get("/podcasts")
@@ -283,7 +265,7 @@ async def podcast_rss(name: str, request: Request):
     if not channel_image and episodes:
         channel_image = episodes[0].get("cover_image_url")
 
-    rss = _build_rss(
+    rss_bytes = _build_rss(
         channel_title=channel_title,
         channel_link=str(request.url_for("podcast_info", name=name)),
         channel_rss_url=str(request.url_for("podcast_rss", name=name)),
@@ -293,7 +275,7 @@ async def podcast_rss(name: str, request: Request):
         name=name,
         request=request,
     )
-    return Response(content=rss, media_type="application/rss+xml; charset=utf-8")
+    return Response(content=rss_bytes, media_type="application/rss+xml; charset=utf-8")
 
 
 def main():
