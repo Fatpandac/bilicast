@@ -39,6 +39,20 @@ def _pubtime_to_iso(ts: int | None) -> str | None:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
 
 
+async def __fetch_video_detail(client: httpx.AsyncClient, bvid: str) -> dict:
+    """从 /x/web-interface/view 获取单集的 desc 和 pic。"""
+    try:
+        res = await client.get(
+            "https://api.bilibili.com/x/web-interface/view",
+            params={"bvid": bvid},
+        )
+        data = res.json().get("data") or {}
+        return {"desc": data.get("desc") or "", "pic": data.get("pic") or ""}
+    except Exception:
+        log.debug(f"获取 {bvid} 详情失败，跳过")
+        return {"desc": "", "pic": ""}
+
+
 async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> list[dict]:
     res = await client.get(
         "https://api.bilibili.com/x/space/fav/season/list",
@@ -46,16 +60,18 @@ async def __collect_season_episodes(client: httpx.AsyncClient, sid: str) -> list
     )
     res.raise_for_status()
     medias = res.json()["data"]["medias"]
+
+    details = await asyncio.gather(*[__fetch_video_detail(client, m["bvid"]) for m in medias])
     return [
         {
             "episode_id": m["bvid"],
             "title": m["title"],
-            "description": "",
+            "description": detail["desc"],
             "source_url": f"https://www.bilibili.com/video/{m['bvid']}",
-            "cover_image_url": m.get("cover") or m.get("pic") or "",
+            "cover_image_url": detail["pic"] or m.get("cover") or "",
             "published_at": _pubtime_to_iso(m.get("pubtime")),
         }
-        for m in medias
+        for m, detail in zip(medias, details)
     ]
 
 
@@ -68,16 +84,18 @@ async def __collect_series_episodes(client: httpx.AsyncClient, sid: str) -> list
         params={"mid": mid, "series_id": sid, "ps": total},
     )
     archives = res.json()["data"]["archives"]
+
+    details = await asyncio.gather(*[__fetch_video_detail(client, a["bvid"]) for a in archives])
     return [
         {
             "episode_id": a["bvid"],
             "title": a["title"],
-            "description": a.get("desc") or "",
+            "description": detail["desc"] or a.get("desc") or "",
             "source_url": f"https://www.bilibili.com/video/{a['bvid']}",
-            "cover_image_url": a.get("pic") or a.get("cover") or "",
+            "cover_image_url": detail["pic"] or a.get("pic") or a.get("cover") or "",
             "published_at": _pubtime_to_iso(a.get("pubdate")),
         }
-        for a in archives
+        for a, detail in zip(archives, details)
     ]
 
 
