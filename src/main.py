@@ -3,6 +3,7 @@ import mimetypes
 import logging
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from time import monotonic
 from urllib.parse import parse_qs, quote, urlparse
@@ -27,10 +28,9 @@ log = logging.getLogger(__name__)
 _PODCAST_METADATA_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _PODCAST_METADATA_TTL_SECONDS = 3600.0
 
-app = FastAPI(debug=os.getenv("DEBUG", "").lower() in ("1", "true", "yes"))
 
-
-async def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     check_config_file()
     init_database()
     request_stop_reset()
@@ -38,15 +38,15 @@ async def on_startup() -> None:
     await asyncio.gather(*[run_downloader(podcast) for podcast in config["podcasts"]])
     log.debug("Database initialized")
     start_cron_jobs()
-
-
-async def on_shutdown() -> None:
+    yield
     request_stop()
     stop_cron_jobs()
 
 
-app.add_event_handler("startup", on_startup)
-app.add_event_handler("shutdown", on_shutdown)
+app = FastAPI(
+    debug=os.getenv("DEBUG", "").lower() in ("1", "true", "yes"),
+    lifespan=lifespan,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
