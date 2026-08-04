@@ -18,7 +18,7 @@ from bilix.sites.bilibili import api
 from bilix.sites.bilibili.downloader import DownloaderBilibili
 from yt_dlp import YoutubeDL
 
-from src.config import Podcast, get_config
+from src.config import DEFAULT_PAGE_SIZE, Podcast, get_config
 from src.database import (
     cleanup_old_episodes,
     get_cached_episode_meta,
@@ -222,9 +222,25 @@ async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dic
     return [detail for detail in details if detail]
 
 
+def _entry_id(entry: dict) -> str:
+    return str(entry.get("id") or _youtube_source_url(entry))
+
+
+def _newest_window(flat_entries: list[dict], page_size: int, sort_order: str) -> list[dict]:
+    """从播放列表里截出最新的 page_size 条。
+
+    播放列表顺序由 sort_order 描述：desc 表示新在前，从头部切；asc 表示旧在前，
+    从尾部切。实测 wangjian / weeknews 是新到旧，sqxx 是旧到新，后者需要在配置
+    里写明 sort_order: asc，否则会取到最旧的一段。
+    """
+    if len(flat_entries) <= page_size:
+        return flat_entries
+    return flat_entries[:page_size] if sort_order == "desc" else flat_entries[-page_size:]
+
+
 def _episode_from_entry(entry: dict) -> dict:
     return {
-        "episode_id": str(entry.get("id") or _youtube_source_url(entry)),
+        "episode_id": _entry_id(entry),
         "title": str(entry.get("title") or entry.get("id") or "Untitled"),
         "description": str(entry.get("description") or ""),
         "source_url": _youtube_source_url(entry),
@@ -250,18 +266,23 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
     )
     flat_entries = [entry for entry in (info.get("entries") or [info]) if entry]
 
-    # 第二步：命中缓存的直接复用，只对没见过的视频解析详情。
-    # 稳态下播放列表几乎全是老视频，这一步基本不发请求。
-    cached = get_cached_episode_meta(
-        [str(entry.get("id") or _youtube_source_url(entry)) for entry in flat_entries]
+    # 第二步：只取最新的 page_size 条。整个播放列表可能上百条，而每条没缓存的
+    # 都要单独解析一次详情。page_size 至少要覆盖本轮可能要下的集数，否则永远
+    # 凑不够 keep_latest。
+    page_size = max(
+        podcast["page_size"], podcast["keep_latest"] or DEFAULT_FIRST_RUN_LATEST
     )
-    missing = [
-        entry
-        for entry in flat_entries
-        if str(entry.get("id") or _youtube_source_url(entry)) not in cached
-    ]
+    window = _newest_window(flat_entries, page_size, podcast["sort_order"])
+    cached = get_cached_episode_meta([_entry_id(entry) for entry in window])
+
+    # 第三步：命中缓存的直接复用，只对没见过的视频解析详情。
+    # 稳态下窗口内几乎全是老视频，这一步基本不发请求。
+    missing = [entry for entry in window if _entry_id(entry) not in cached]
     if missing:
-        log.info(f"{podcast['name']}: 需解析 {len(missing)}/{len(flat_entries)} 条视频详情")
+        log.info(
+            f"{podcast['name']}: 播放列表 {len(flat_entries)} 条，"
+            f"取最新 {len(window)} 条，需解析 {len(missing)} 条详情"
+        )
 
     fetched = [
         _episode_from_entry(entry)
@@ -277,7 +298,9 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
             _youtube_thumbnail(info) or None,
         )
 
-    episodes = list(cached.values()) + fetched
+    episodes = [
+        cached[_entry_id(entry)] for entry in window if _entry_id(entry) in cached
+    ] + fetched
 
     desc = podcast["sort_order"] == "desc"
     if podcast["sort_by"] == "title":

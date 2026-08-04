@@ -14,6 +14,8 @@ def _youtube_podcast() -> Podcast:
         "keep_latest": 10,
         "sort_by": "date",
         "sort_order": "desc",
+        "page_size": 20,
+        "yt_dlp_options": {},
     }
 
 
@@ -307,3 +309,85 @@ def test_youtube_cached_entries_skip_detail_fetch(monkeypatch):
     assert {e["episode_id"] for e in episodes} == {"known", "fresh"}
     # 新的在前（按发布时间倒序）
     assert episodes[0]["episode_id"] == "fresh"
+
+
+def _windowing_podcast(page_size):
+    podcast = _youtube_podcast()
+    podcast["page_size"] = page_size
+    podcast["keep_latest"] = 2
+    return podcast
+
+
+def _ordered_playlist_fake(dates):
+    """dates: [(id, 'YYYYMMDD'), ...] 按播放列表顺序给出。"""
+
+    class FakeYoutubeDL:
+        calls = []
+
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download):
+            if url == "https://www.youtube.com/playlist?list=PL123":
+                return {
+                    "title": "Channel",
+                    "entries": [
+                        {"id": vid, "url": f"https://www.youtube.com/watch?v={vid}"}
+                        for vid, _ in dates
+                    ],
+                }
+            vid = url.rsplit("=", 1)[-1]
+            FakeYoutubeDL.calls.append(vid)
+            return {"id": vid, "title": vid, "upload_date": dict(dates)[vid]}
+
+    return FakeYoutubeDL
+
+
+def test_page_size_takes_newest_end_of_newest_first_playlist(monkeypatch):
+    dates = [("n1", "20260803"), ("n2", "20260802"), ("o1", "20260101"), ("o2", "20251231")]
+    fake = _ordered_playlist_fake(dates)
+    monkeypatch.setattr(downloader, "YoutubeDL", fake, raising=False)
+    monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+    _stub_meta_cache(monkeypatch)
+
+    episodes = asyncio.run(downloader._collect_youtube_episodes(_windowing_podcast(2)))
+
+    assert [e["episode_id"] for e in episodes] == ["n1", "n2"]
+
+
+def test_page_size_takes_newest_end_of_oldest_first_playlist(monkeypatch):
+    """播放列表旧到新时从尾部取，由 sort_order: asc 指明（实测 sqxx 就是这样）。"""
+    dates = [("o2", "20251231"), ("o1", "20260101"), ("n2", "20260802"), ("n1", "20260803")]
+    fake = _ordered_playlist_fake(dates)
+    monkeypatch.setattr(downloader, "YoutubeDL", fake, raising=False)
+    monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+    _stub_meta_cache(monkeypatch)
+
+    podcast = _windowing_podcast(2)
+    podcast["sort_order"] = "asc"
+
+    episodes = asyncio.run(downloader._collect_youtube_episodes(podcast))
+
+    assert {e["episode_id"] for e in episodes} == {"n1", "n2"}
+
+
+def test_page_size_is_raised_to_cover_keep_latest(monkeypatch):
+    """page_size 小于 keep_latest 时要抬高，否则永远凑不够要保留的集数。"""
+    dates = [(f"v{i}", f"2026080{9 - i}") for i in range(5)]
+    fake = _ordered_playlist_fake(dates)
+    monkeypatch.setattr(downloader, "YoutubeDL", fake, raising=False)
+    monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+    _stub_meta_cache(monkeypatch)
+
+    podcast = _windowing_podcast(1)
+    podcast["keep_latest"] = 4
+
+    episodes = asyncio.run(downloader._collect_youtube_episodes(podcast))
+
+    assert len(episodes) == 4

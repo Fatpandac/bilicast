@@ -10,8 +10,12 @@ server:
 # podcasts 中除 name / url / update_period_cron 外均为可选：
 #   keep_latest  只保留最新 N 集，多余的连同文件一起删除；
 #                不填则永不删除旧集，首次只下载最新 10 集，之后有几集新的就下几集
+#   page_size    每轮从播放列表取多少条参与筛选，默认 20。整个列表可能上百条，
+#                每条没缓存过的都要单独解析一次详情，所以只取最新的一段。
+#                实际取值不低于 keep_latest，否则永远凑不够
 #   sort_by      默认 date
-#   sort_order   默认 desc
+#   sort_order   默认 desc。同时表示播放列表自身的顺序：desc 取列表头部，
+#                asc 取列表尾部。列表若是旧到新排列，这里要写 asc
 #   yt_dlp_options  透传给 yt-dlp 的额外参数（YoutubeDL Python API 的参数名），
 #                   会覆盖内置默认值；extractor_args 这类嵌套字典是合并而非整个替换。
 #                   命令行的 --extractor-args youtube:player-client=default,-tv

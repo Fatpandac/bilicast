@@ -12,6 +12,7 @@ class Podcast(TypedDict):
     keep_latest: int | None  # 不填则保留全部已下载剧集，仅首次抓取最新若干集
     sort_by: Literal["date", "title"]
     sort_order: Literal["asc", "desc"]
+    page_size: int  # 每次从播放列表最新的一端取多少条参与筛选
     yt_dlp_options: dict  # 透传给 yt-dlp 的额外参数，覆盖内置默认值
 
 
@@ -35,6 +36,10 @@ log = logging.getLogger(__name__)
 
 __configFile = "config.yaml"
 
+# 每次从播放列表取多少条参与筛选。播放列表可能有上百条，而每条没缓存的都要
+# 单独解析一次详情，所以默认只取最新的一段。
+DEFAULT_PAGE_SIZE = 20
+
 
 def __get_config_file() -> str:
     config_path = Path(__file__).resolve().parents[1] / __configFile
@@ -57,6 +62,7 @@ def __apply_podcast_defaults(podcast: dict) -> Podcast:
         "keep_latest": int(keep_latest) if keep_latest is not None else None,
         "sort_by": podcast.get("sort_by") or "date",
         "sort_order": podcast.get("sort_order") or "desc",
+        "page_size": int(podcast.get("page_size") or DEFAULT_PAGE_SIZE),
         "yt_dlp_options": podcast.get("yt_dlp_options") or {},
     }  # type: ignore[return-value]
 
