@@ -224,6 +224,11 @@ def _detail_semaphore() -> asyncio.Semaphore:
     return _detail_semaphore_instance
 
 
+# 直播还没结束、或刚结束但回放尚未转好。这两种状态下拉到的流是残缺的
+# （实测 post_live 时 63.7 分钟的节目只下到 0.8 分钟），要等转码完成。
+_UNREADY_LIVE_STATUS = {"is_live", "post_live", "is_upcoming"}
+
+
 async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dict]:
     """并发取每个视频的详情，取不到的丢弃。
 
@@ -239,7 +244,20 @@ async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dic
             )
         # 私享/已删除的视频在 ignoreerrors 下返回空 dict。丢弃而不是退回扁平
         # 条目，否则它们会带着空发布时间进入待下载列表，每轮都失败一次。
-        return {**entry, **detail} if detail else None
+        if not detail:
+            return None
+
+        # 回放没转好的直接跳过，交给下一次定时任务。这里丢弃后不会进元数据
+        # 缓存，下一轮会重新解析，届时状态转为 was_live 就能正常下载。
+        live_status = detail.get("live_status")
+        if live_status in _UNREADY_LIVE_STATUS:
+            log.info(
+                f"跳过 {detail.get('title') or _entry_id(entry)}："
+                f"直播回放尚未就绪（live_status={live_status}）"
+            )
+            return None
+
+        return {**entry, **detail}
 
     details = await asyncio.gather(*[fetch(entry) for entry in entries])
     return [detail for detail in details if detail]
