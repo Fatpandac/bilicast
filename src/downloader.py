@@ -21,10 +21,12 @@ from yt_dlp import YoutubeDL
 from src.config import Podcast, get_config
 from src.database import (
     cleanup_old_episodes,
+    get_cached_episode_meta,
     get_latest_published_at,
     get_podcast_by_episode,
     get_podcast,
     save_episode,
+    save_episode_meta,
     update_podcast_metadata,
 )
 
@@ -41,6 +43,7 @@ DOWNLOADS_DIR = Path("downloads")
 DEFAULT_FIRST_RUN_LATEST = 10
 # 采集播放列表时并发取视频详情的上限
 YOUTUBE_DETAIL_CONCURRENCY = 8
+_detail_semaphore_instance: asyncio.Semaphore | None = None
 AUDIO_EXTENSIONS = {
     ".m4a",
     ".mp3",
@@ -185,14 +188,26 @@ def _extract_youtube_info(url: str, download: bool, options: dict) -> dict:
 
 
 
+def _detail_semaphore() -> asyncio.Semaphore:
+    """全局共用的详情解析并发闸门。
+
+    必须是全局的：asyncio.to_thread 用的是同一个默认线程池（max_workers =
+    min(32, cpu+4)），每个播客各持一个信号量的话，多个播客一起跑就会有几十个
+    任务挤同一个线程池，既排不上队又把机器压垮。
+    """
+    global _detail_semaphore_instance
+    if _detail_semaphore_instance is None:
+        _detail_semaphore_instance = asyncio.Semaphore(YOUTUBE_DETAIL_CONCURRENCY)
+    return _detail_semaphore_instance
+
+
 async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dict]:
-    """并发取每个视频的详情，失败的用扁平条目兜底。
+    """并发取每个视频的详情，取不到的丢弃。
 
     扁平列表里没有发布时间和简介（实测 timestamp 100% 为 None），而排序和
-    「最新 N 集」都依赖发布时间，所以每条都得取详情。yt-dlp 在播放列表内部是
-    串行处理的，100 条要十几分钟，这里改成受限并发。
+    「最新 N 集」都依赖发布时间，所以未缓存的条目只能逐个解析。
     """
-    semaphore = asyncio.Semaphore(YOUTUBE_DETAIL_CONCURRENCY)
+    semaphore = _detail_semaphore()
 
     async def fetch(entry: dict) -> dict | None:
         async with semaphore:
@@ -205,6 +220,17 @@ async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dic
 
     details = await asyncio.gather(*[fetch(entry) for entry in entries])
     return [detail for detail in details if detail]
+
+
+def _episode_from_entry(entry: dict) -> dict:
+    return {
+        "episode_id": str(entry.get("id") or _youtube_source_url(entry)),
+        "title": str(entry.get("title") or entry.get("id") or "Untitled"),
+        "description": str(entry.get("description") or ""),
+        "source_url": _youtube_source_url(entry),
+        "cover_image_url": _youtube_thumbnail(entry),
+        "published_at": _youtube_published_at(entry),
+    }
 
 
 async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
@@ -224,8 +250,24 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
     )
     flat_entries = [entry for entry in (info.get("entries") or [info]) if entry]
 
-    # 第二步：并发补齐发布时间和简介
-    entries = await _fetch_youtube_details(flat_entries, base_options)
+    # 第二步：命中缓存的直接复用，只对没见过的视频解析详情。
+    # 稳态下播放列表几乎全是老视频，这一步基本不发请求。
+    cached = get_cached_episode_meta(
+        [str(entry.get("id") or _youtube_source_url(entry)) for entry in flat_entries]
+    )
+    missing = [
+        entry
+        for entry in flat_entries
+        if str(entry.get("id") or _youtube_source_url(entry)) not in cached
+    ]
+    if missing:
+        log.info(f"{podcast['name']}: 需解析 {len(missing)}/{len(flat_entries)} 条视频详情")
+
+    fetched = [
+        _episode_from_entry(entry)
+        for entry in await _fetch_youtube_details(missing, base_options)
+    ]
+    save_episode_meta(fetched)
 
     if info.get("title") or info.get("description") or _youtube_thumbnail(info):
         update_podcast_metadata(
@@ -235,17 +277,7 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
             _youtube_thumbnail(info) or None,
         )
 
-    episodes = [
-        {
-            "episode_id": str(entry.get("id") or _youtube_source_url(entry)),
-            "title": str(entry.get("title") or entry.get("id") or "Untitled"),
-            "description": str(entry.get("description") or ""),
-            "source_url": _youtube_source_url(entry),
-            "cover_image_url": _youtube_thumbnail(entry),
-            "published_at": _youtube_published_at(entry),
-        }
-        for entry in entries
-    ]
+    episodes = list(cached.values()) + fetched
 
     desc = podcast["sort_order"] == "desc"
     if podcast["sort_by"] == "title":

@@ -49,6 +49,22 @@ def init_database():
         )
         """
     )
+    # 视频元数据缓存。取「最新 N 集」要按发布时间排序，就得知道整个播放列表
+    # 每一条的发布时间，而扁平列表不带发布时间，只能逐条解析。缓存之后，后续
+    # 运行只需解析新出现的视频。视频 id 全局唯一，故不按播客分表。
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS episode_meta (
+            episode_id text primary key,
+            title text,
+            description text,
+            source_url text,
+            cover_image_url text,
+            published_at text,
+            cached_at text default (datetime('now', 'localtime'))
+        )
+        """
+    )
     c.execute("PRAGMA table_info(episode)")
     existing_episode_cols = {row[1] for row in c.fetchall()}
     if "cover_image_url" not in existing_episode_cols:
@@ -196,6 +212,61 @@ def count_episodes_by_podcast(podcast_name: str) -> int:
     count = c.fetchone()[0]
     c.connection.close()
     return int(count)
+
+
+_META_FIELDS = (
+    "episode_id",
+    "title",
+    "description",
+    "source_url",
+    "cover_image_url",
+    "published_at",
+)
+
+
+def get_cached_episode_meta(episode_ids: list[str]) -> dict[str, dict]:
+    """批量取视频元数据缓存，返回 {episode_id: 剧集字典}。"""
+    if not episode_ids:
+        return {}
+
+    _, c = __connect_to_database()
+    cached: dict[str, dict] = {}
+    # SQLite 的变量上限是 999，分批查询
+    for start in range(0, len(episode_ids), 500):
+        chunk = episode_ids[start : start + 500]
+        placeholders = ",".join("?" * len(chunk))
+        c.execute(
+            f"SELECT {', '.join(_META_FIELDS)} FROM episode_meta "
+            f"WHERE episode_id IN ({placeholders})",
+            chunk,
+        )
+        for row in c.fetchall():
+            episode = dict(row)
+            cached[episode["episode_id"]] = episode
+    c.connection.close()
+    return cached
+
+
+def save_episode_meta(episodes: list[dict]) -> None:
+    if not episodes:
+        return
+
+    conn, c = __connect_to_database()
+    c.executemany(
+        f"""
+        INSERT INTO episode_meta ({', '.join(_META_FIELDS)})
+        VALUES ({', '.join('?' * len(_META_FIELDS))})
+        ON CONFLICT(episode_id) DO UPDATE SET
+            title = excluded.title,
+            description = excluded.description,
+            source_url = excluded.source_url,
+            cover_image_url = excluded.cover_image_url,
+            published_at = excluded.published_at
+        """,
+        [tuple(episode.get(field) for field in _META_FIELDS) for episode in episodes],
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_latest_published_at(podcast_name: str) -> str | None:

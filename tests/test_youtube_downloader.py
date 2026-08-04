@@ -17,6 +17,12 @@ def _youtube_podcast() -> Podcast:
     }
 
 
+def _stub_meta_cache(monkeypatch, cached=None):
+    """屏蔽元数据缓存，避免单测碰到真实的 database.db。"""
+    monkeypatch.setattr(downloader, "get_cached_episode_meta", lambda ids: cached or {})
+    monkeypatch.setattr(downloader, "save_episode_meta", lambda rows: None)
+
+
 def test_youtube_url_detection_ignores_port():
     assert downloader._is_youtube_url("https://www.youtube.com:443/playlist?list=PL123")
 
@@ -88,6 +94,7 @@ def test_youtube_playlist_entries_are_collected(monkeypatch):
 
     monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
     monkeypatch.setattr(downloader, "update_podcast_metadata", fake_update_metadata)
+    _stub_meta_cache(monkeypatch)
 
     episodes = asyncio.run(downloader._collect_youtube_episodes(_youtube_podcast()))
 
@@ -244,7 +251,59 @@ def test_youtube_private_videos_are_dropped(monkeypatch):
 
     monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
     monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+    _stub_meta_cache(monkeypatch)
 
     episodes = asyncio.run(downloader._collect_youtube_episodes(_youtube_podcast()))
 
     assert [episode["episode_id"] for episode in episodes] == ["good"]
+
+
+def test_youtube_cached_entries_skip_detail_fetch(monkeypatch):
+    """命中缓存的条目不再解析详情，只对没见过的视频发请求。"""
+    detail_calls = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download):
+            if url == "https://www.youtube.com/playlist?list=PL123":
+                return {
+                    "title": "Channel",
+                    "entries": [
+                        {"id": "known", "url": "https://www.youtube.com/watch?v=known"},
+                        {"id": "fresh", "url": "https://www.youtube.com/watch?v=fresh"},
+                    ],
+                }
+            detail_calls.append(url)
+            return {"id": "fresh", "title": "Fresh", "timestamp": 1_700_000_000}
+
+    saved = []
+    cached = {
+        "known": {
+            "episode_id": "known",
+            "title": "Known",
+            "description": "",
+            "source_url": "https://www.youtube.com/watch?v=known",
+            "cover_image_url": "",
+            "published_at": "2020-01-01T00:00:00+00:00",
+        }
+    }
+    monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
+    monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+    monkeypatch.setattr(downloader, "get_cached_episode_meta", lambda ids: cached)
+    monkeypatch.setattr(downloader, "save_episode_meta", saved.extend)
+
+    episodes = asyncio.run(downloader._collect_youtube_episodes(_youtube_podcast()))
+
+    assert detail_calls == ["https://www.youtube.com/watch?v=fresh"]
+    assert [e["episode_id"] for e in saved] == ["fresh"]
+    assert {e["episode_id"] for e in episodes} == {"known", "fresh"}
+    # 新的在前（按发布时间倒序）
+    assert episodes[0]["episode_id"] == "fresh"
