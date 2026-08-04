@@ -8,7 +8,6 @@ import logging
 import shutil
 import tempfile
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -71,6 +70,30 @@ def __audio_files_in(dirpath: Path) -> set[Path]:
         for path in dirpath.rglob("*")
         if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
     }
+
+
+def _audio_snapshot(target_dir: Path) -> dict[Path, float]:
+    """下载前记录目录里音频文件的修改时间，供事后比对。"""
+    return {path: path.stat().st_mtime for path in __audio_files_in(target_dir)}
+
+
+def _touched_audio_file(target_dir: Path, before: dict[Path, float]) -> str | None:
+    """找出本次新增或被覆盖的音频文件，取不到返回 None。
+
+    只看「目录前后差集」的话，目标文件已存在被覆盖时会得到空集，从而把一次成功
+    的下载误判为失败，该集永不入库、每轮重下。
+
+    比对的是 mtime 快照而不是拿 time.time() 当基准：文件系统的时间戳可能比
+    time.time() 略早（实测差约 0.3ms），用时间点比较会漏判刚写完的文件。
+    """
+    touched = [
+        path
+        for path in __audio_files_in(target_dir)
+        if before.get(path) != path.stat().st_mtime
+    ]
+    if not touched:
+        return None
+    return max(touched, key=lambda path: path.stat().st_mtime).name
 
 
 def _pubtime_to_iso(ts: int | None) -> str | None:
@@ -464,25 +487,14 @@ async def __download_one(
     episode: dict[str, str],
     target_dir: Path,
 ) -> str | None:
-    before_files = __audio_files_in(target_dir)
-    started_at = time.time()
+    # bilix 不返回文件名，只能靠比对目录里音频文件的修改时间。
+    before = _audio_snapshot(target_dir)
     await bilix_downloader.get_video(
         episode["source_url"],
         path=target_dir,
         only_audio=True,
     )
-    after_files = __audio_files_in(target_dir)
-
-    # bilix 不返回文件名，只能看目录。优先取新增文件；目标文件已存在被覆盖时
-    # 差集为空，此时退回按修改时间找本次写过的文件，避免误判为下载失败。
-    downloaded = after_files - before_files or {
-        path for path in after_files if path.stat().st_mtime >= started_at
-    }
-    if not downloaded:
-        return None
-
-    newest_file = max(downloaded, key=lambda f: f.stat().st_mtime)
-    return newest_file.name
+    return _touched_audio_file(target_dir, before)
 
 
 async def __download_episode(episode: dict[str, str], target_dir: Path) -> str | None:
@@ -532,12 +544,21 @@ def _run_youtube_download(
         "outtmpl": {"default": "%(title).200B [%(id)s].%(ext)s"},
         "no_warnings": True,
         "noplaylist": True,
+        # HLS 分片缺失时直接报错。yt-dlp 默认会跳过坏分片并照常收尾，产出的残缺
+        # 文件会被当成下载成功写进数据库，之后再也不会重下（实测出现过只有 1 分钟
+        # 的 64 分钟节目）。失败不入库，交给下一次定时任务重试。
+        "skip_unavailable_fragments": False,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
         "progress_hooks": [_yt_progress_hook],
         **_youtube_base_options(),
     }
     options = _merge_yt_dlp_options(options, yt_dlp_options)
-    return _downloaded_file_name(_extract_youtube_info(url, True, options))
+
+    # yt-dlp 没给出 requested_downloads 时（例如目标文件已存在被直接跳过），
+    # 与 bilix 那边走同一套兜底，避免把成功的下载记成失败。
+    before = _audio_snapshot(target_dir)
+    info = _extract_youtube_info(url, True, options)
+    return _downloaded_file_name(info) or _touched_audio_file(target_dir, before)
 
 
 async def _download_youtube_episode(
