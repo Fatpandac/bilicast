@@ -108,12 +108,52 @@ def test_youtube_episode_downloads_audio(monkeypatch, tmp_path):
         def extract_info(self, url, download):
             assert url == "https://www.youtube.com/watch?v=abc123"
             assert download is True
-            assert self.options["format"] == "bestaudio/best"
+            assert self.options["format"].startswith("bestaudio[ext=m4a]")
             assert self.options["paths"]["home"] == str(target_dir)
-            Path(self.options["paths"]["home"], "downloaded-audio.m4a").write_bytes(
-                b"audio"
-            )
-            return {"id": "abc123"}
+            written = Path(self.options["paths"]["home"], "downloaded-audio.m4a")
+            written.write_bytes(b"audio")
+            # filepath 由 postprocessor 更新为转码后的路径
+            return {"id": "abc123", "requested_downloads": [{"filepath": str(written)}]}
+
+    monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
+
+    file_name = asyncio.run(
+        downloader._download_youtube_episode(
+            {
+                "episode_id": "abc123",
+                "source_url": "https://www.youtube.com/watch?v=abc123",
+            },
+            target_dir,
+        )
+    )
+
+    assert file_name == "downloaded-audio.m4a"
+
+
+def test_youtube_episode_returns_name_when_file_already_exists(monkeypatch, tmp_path):
+    """目标文件已存在时也要返回文件名。
+
+    早先的实现比对下载前后的目录差集，文件已存在时差集为空，会把一次成功的
+    下载误判为失败，导致该集永不入库、每轮重复下载。
+    """
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    existing = target_dir / "downloaded-audio.m4a"
+    existing.write_bytes(b"old")
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download):
+            existing.write_bytes(b"new")  # yt-dlp 覆盖同名文件，目录没有新增项
+            return {"id": "abc123", "requested_downloads": [{"filepath": str(existing)}]}
 
     monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
 
@@ -153,7 +193,6 @@ def test_youtube_episode_requires_ffmpeg(monkeypatch, tmp_path):
         )
     except RuntimeError as exc:
         assert "ffmpeg" in str(exc)
-        assert "YouTube" in str(exc)
-        assert "brew install ffmpeg" in str(exc)
+        assert "m4a" in str(exc)
     else:
         raise AssertionError("Expected missing ffmpeg to raise RuntimeError")

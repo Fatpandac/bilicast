@@ -198,8 +198,23 @@ def count_episodes_by_podcast(podcast_name: str) -> int:
     return int(count)
 
 
-def cleanup_old_episodes(podcast_name: str, keep_latest: int) -> list[str]:
-    if keep_latest <= 0:
+def get_latest_published_at(podcast_name: str) -> str | None:
+    """库中该播客最新一集的发布时间，没有任何带发布时间的剧集时返回 None。"""
+    _, c = __connect_to_database()
+    c.execute(
+        """
+        SELECT MAX(published_at) FROM episode
+        WHERE podcast_name = ? AND published_at IS NOT NULL
+        """,
+        (podcast_name,),
+    )
+    row = c.fetchone()
+    c.connection.close()
+    return row[0] if row else None
+
+
+def cleanup_old_episodes(podcast_name: str, keep_latest: int | None) -> list[str]:
+    if keep_latest is None or keep_latest <= 0:
         return []
 
     conn, c = __connect_to_database()

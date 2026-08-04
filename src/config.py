@@ -9,9 +9,10 @@ class Podcast(TypedDict):
     name: str
     url: str
     update_period_cron: str
-    keep_latest: int
+    keep_latest: int | None  # 不填则保留全部已下载剧集，仅首次抓取最新若干集
     sort_by: Literal["date", "title"]
     sort_order: Literal["asc", "desc"]
+    yt_dlp_options: dict  # 透传给 yt-dlp 的额外参数，覆盖内置默认值
 
 
 class ServerConfig(TypedDict, total=False):
@@ -48,6 +49,18 @@ def __check_podcast_name_is_unique(podcasts: list[Podcast]):
     return set(podcast["name"] for podcast in podcasts).__len__() == len(podcasts)
 
 
+def __apply_podcast_defaults(podcast: dict) -> Podcast:
+    """补全可选字段：keep_latest 缺省为 None（不清理旧集），排序缺省按最新发布。"""
+    keep_latest = podcast.get("keep_latest")
+    return {
+        **podcast,
+        "keep_latest": int(keep_latest) if keep_latest is not None else None,
+        "sort_by": podcast.get("sort_by") or "date",
+        "sort_order": podcast.get("sort_order") or "desc",
+        "yt_dlp_options": podcast.get("yt_dlp_options") or {},
+    }  # type: ignore[return-value]
+
+
 def check_config_file():
     with open(__get_config_file(), "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
@@ -58,4 +71,7 @@ def check_config_file():
 def get_config() -> Config:
     with open(__get_config_file(), "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+    config["podcasts"] = [
+        __apply_podcast_defaults(podcast) for podcast in config["podcasts"]
+    ]
     return config

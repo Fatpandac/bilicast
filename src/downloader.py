@@ -7,6 +7,7 @@ import errno
 import logging
 import shutil
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -19,6 +20,7 @@ from yt_dlp import YoutubeDL
 from src.config import Podcast, get_config
 from src.database import (
     cleanup_old_episodes,
+    get_latest_published_at,
     get_podcast_by_episode,
     get_podcast,
     save_episode,
@@ -34,6 +36,8 @@ logging.getLogger("yt_dlp").setLevel(logging.WARNING)
 _cancel_downloads = threading.Event()
 
 DOWNLOADS_DIR = Path("downloads")
+# keep_latest 未配置时，首次抓取的集数上限（之后只跟进新发布的剧集）
+DEFAULT_FIRST_RUN_LATEST = 10
 AUDIO_EXTENSIONS = {
     ".m4a",
     ".mp3",
@@ -134,6 +138,25 @@ def _youtube_base_options() -> dict:
     return opts
 
 
+def _merge_yt_dlp_options(base: dict, extra: dict | None) -> dict:
+    """把配置里的 yt_dlp_options 合并进内置默认值。
+
+    extra 覆盖 base；对 extractor_args 这类嵌套字典做一层合并，
+    这样用户加 youtube 的参数不会把内置的 youtubetab 设置顶掉。
+    """
+    if not extra:
+        return base
+
+    merged = dict(base)
+    for key, value in extra.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = {**current, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 def _extract_youtube_info(url: str, download: bool, options: dict) -> dict:
     with YoutubeDL(options) as ydl:
         return ydl.extract_info(url, download=download) or {}
@@ -149,6 +172,7 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
         "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         **_youtube_base_options(),
     }
+    options = _merge_yt_dlp_options(options, podcast.get("yt_dlp_options"))
     info = await asyncio.to_thread(
         _extract_youtube_info, podcast["url"], False, options
     )
@@ -337,13 +361,19 @@ async def __download_one(
     target_dir: Path,
 ) -> str | None:
     before_files = __audio_files_in(target_dir)
+    started_at = time.time()
     await bilix_downloader.get_video(
         episode["source_url"],
         path=target_dir,
         only_audio=True,
     )
     after_files = __audio_files_in(target_dir)
-    downloaded = after_files - before_files
+
+    # bilix 不返回文件名，只能看目录。优先取新增文件；目标文件已存在被覆盖时
+    # 差集为空，此时退回按修改时间找本次写过的文件，避免误判为下载失败。
+    downloaded = after_files - before_files or {
+        path for path in after_files if path.stat().st_mtime >= started_at
+    }
     if not downloaded:
         return None
 
@@ -370,7 +400,23 @@ def _yt_progress_hook(d: dict) -> None:
         log.info(f"下载完成: {Path(d.get('filename', '')).name}")
 
 
-def _run_youtube_download(url: str, target_dir: Path) -> None:
+def _downloaded_file_name(info: dict) -> str | None:
+    """从 yt-dlp 的返回信息里取最终文件名。
+
+    filepath 会被 postprocessor 更新，所以拿到的是转码后的 .m4a 而不是中间的
+    .mp4。比对目录前后差集的老做法在目标文件已存在时会得到空集，从而把一次
+    成功的下载误判为失败，进而永不入库、每轮重下。
+    """
+    for entry in info.get("requested_downloads") or []:
+        path = entry.get("filepath") or entry.get("_filename") or entry.get("filename")
+        if path:
+            return Path(path).name
+    return None
+
+
+def _run_youtube_download(
+    url: str, target_dir: Path, yt_dlp_options: dict | None = None
+) -> str | None:
     if not shutil.which("ffmpeg"):
         raise RuntimeError(
             "需要 ffmpeg 将音频转换为 m4a 格式。"
@@ -386,21 +432,16 @@ def _run_youtube_download(url: str, target_dir: Path) -> None:
         "progress_hooks": [_yt_progress_hook],
         **_youtube_base_options(),
     }
-    _extract_youtube_info(url, True, options)
+    options = _merge_yt_dlp_options(options, yt_dlp_options)
+    return _downloaded_file_name(_extract_youtube_info(url, True, options))
 
 
 async def _download_youtube_episode(
-    episode: dict[str, str], target_dir: Path
+    episode: dict[str, str], target_dir: Path, yt_dlp_options: dict | None = None
 ) -> str | None:
-    before_files = __audio_files_in(target_dir)
-    await asyncio.to_thread(_run_youtube_download, episode["source_url"], target_dir)
-    after_files = __audio_files_in(target_dir)
-    downloaded = after_files - before_files
-    if not downloaded:
-        return None
-
-    newest_file = max(downloaded, key=lambda f: f.stat().st_mtime)
-    return newest_file.name
+    return await asyncio.to_thread(
+        _run_youtube_download, episode["source_url"], target_dir, yt_dlp_options
+    )
 
 
 async def _download_episode_for_podcast(
@@ -409,7 +450,9 @@ async def _download_episode_for_podcast(
     target_dir: Path,
 ) -> str | None:
     if _is_youtube_url(podcast["url"]):
-        return await _download_youtube_episode(episode, target_dir)
+        return await _download_youtube_episode(
+            episode, target_dir, podcast.get("yt_dlp_options")
+        )
 
     return await __download_episode(episode, target_dir)
 
@@ -420,6 +463,44 @@ async def _wait_for_cancel() -> None:
         await asyncio.sleep(0.2)
 
 
+def _select_episodes_without_keep_latest(
+    podcast_name: str, episodes: list[dict]
+) -> list[dict]:
+    """未配置 keep_latest 时的取集范围。
+
+    首次运行只取最新的 DEFAULT_FIRST_RUN_LATEST 集，避免把整个播放列表拉下来。
+    之后取两部分的并集：
+
+    1. 比库中最新一集更晚发布的，不设上限，更新几集就下几集；
+    2. 最新 DEFAULT_FIRST_RUN_LATEST 集组成的固定窗口。
+
+    只有第 1 部分的话，下载是按新到旧进行的，最新一集一旦成功，水位线就跳到
+    最前面，中间失败或被中断的剧集永远不会被重试。加上第 2 部分即可补齐，
+    窗口是固定位置而非「最新 N 个缺失的」，所以不会每轮往回多挖 N 集。
+
+    真正下哪些由调用方按数据库去重，这里只负责圈定范围。
+    """
+    newest_first = sorted(
+        episodes, key=lambda item: item.get("published_at") or "", reverse=True
+    )
+    latest_known = get_latest_published_at(podcast_name)
+    if latest_known is None:
+        return newest_first[:DEFAULT_FIRST_RUN_LATEST]
+
+    selected = [
+        episode
+        for episode in newest_first
+        if (episode.get("published_at") or "") > latest_known
+    ]
+    seen = {episode["episode_id"] for episode in selected}
+    selected.extend(
+        episode
+        for episode in newest_first[:DEFAULT_FIRST_RUN_LATEST]
+        if episode["episode_id"] not in seen
+    )
+    return selected
+
+
 async def __run(podcast: Podcast):
     podcast_name = podcast["name"]
     target_dir = DOWNLOADS_DIR / podcast_name
@@ -427,7 +508,7 @@ async def __run(podcast: Podcast):
 
     podcast_conf = get_podcast(podcast_name)
     if podcast_conf:
-        removed = cleanup_old_episodes(podcast_name, int(podcast_conf["keep_latest"]))
+        removed = cleanup_old_episodes(podcast_name, podcast_conf["keep_latest"])
         if removed:
             for name in removed:
                 candidate = target_dir / name
@@ -435,7 +516,13 @@ async def __run(podcast: Podcast):
                     candidate.unlink(missing_ok=True)
             log.info(f"{podcast_name}: 下载前清理旧集 {len(removed)} 条以释放空间")
 
-    episodes = (await __collect_episodes(podcast))[: podcast["keep_latest"]]
+    episodes = await __collect_episodes(podcast)
+    keep_latest = podcast["keep_latest"]
+    episodes = (
+        episodes[:keep_latest]
+        if keep_latest
+        else _select_episodes_without_keep_latest(podcast_name, episodes)
+    )
     pending_episodes = [
         episode
         for episode in episodes

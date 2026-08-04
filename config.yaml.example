@@ -7,6 +7,15 @@ server:
 #   cookies_file: /path/to/cookies.txt   # 从文件读取 cookies
 #   cookies_from_browser: chrome         # 从浏览器读取（chrome/firefox/safari 等）
 
+# podcasts 中除 name / url / update_period_cron 外均为可选：
+#   keep_latest  只保留最新 N 集，多余的连同文件一起删除；
+#                不填则永不删除旧集，首次只下载最新 10 集，之后有几集新的就下几集
+#   sort_by      默认 date
+#   sort_order   默认 desc
+#   yt_dlp_options  透传给 yt-dlp 的额外参数（YoutubeDL Python API 的参数名），
+#                   会覆盖内置默认值；extractor_args 这类嵌套字典是合并而非整个替换。
+#                   命令行的 --extractor-args youtube:player-client=default,-tv
+#                   对应下面 youtube1 的写法（横杠换成下划线，逗号列表换成 YAML 数组）
 podcasts:
   - name: anycast1
     url: https://space.bilibili.com/1780480185/lists/6235752?type=season
@@ -22,9 +31,11 @@ podcasts:
     sort_by: date
     sort_order: asc
 
+  # 不清理旧集：首次只下最新 10 集，之后有几集新的就下几集；排序用默认值
   - name: youtube1
     url: https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     update_period_cron: '0 * * * *'
-    keep_latest: 10
-    sort_by: date
-    sort_order: desc
+    yt_dlp_options:
+      extractor_args:
+        youtube:
+          player_client: [default, -tv]
