@@ -34,32 +34,47 @@ def test_youtube_playlist_entries_are_collected(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        # 采集分两步：先扁平列表，再逐个取详情（并发）
+        FLAT = {
+            "title": "Channel Title",
+            "description": "Channel description",
+            "thumbnail": "https://img.example/channel.jpg",
+            "entries": [
+                {"id": "newer", "title": "Newer video",
+                 "webpage_url": "https://www.youtube.com/watch?v=newer"},
+                {"id": "older", "title": "Older video",
+                 "url": "https://www.youtube.com/watch?v=older"},
+            ],
+        }
+        DETAILS = {
+            "newer": {
+                "id": "newer",
+                "title": "Newer video",
+                "description": "Newer description",
+                "webpage_url": "https://www.youtube.com/watch?v=newer",
+                "thumbnail": "https://img.example/newer.jpg",
+                "timestamp": 1_700_000_000,
+            },
+            "older": {
+                "id": "older",
+                "title": "Older video",
+                "description": "Older description",
+                "url": "https://www.youtube.com/watch?v=older",
+                "thumbnails": [{"url": "https://img.example/older.jpg"}],
+                "upload_date": "20230102",
+            },
+        }
+
         def extract_info(self, url, download):
-            assert url == "https://www.youtube.com/playlist?list=PL123"
             assert download is False
-            return {
-                "title": "Channel Title",
-                "description": "Channel description",
-                "thumbnail": "https://img.example/channel.jpg",
-                "entries": [
-                    {
-                        "id": "newer",
-                        "title": "Newer video",
-                        "description": "Newer description",
-                        "webpage_url": "https://www.youtube.com/watch?v=newer",
-                        "thumbnail": "https://img.example/newer.jpg",
-                        "timestamp": 1_700_000_000,
-                    },
-                    {
-                        "id": "older",
-                        "title": "Older video",
-                        "description": "Older description",
-                        "url": "https://www.youtube.com/watch?v=older",
-                        "thumbnails": [{"url": "https://img.example/older.jpg"}],
-                        "upload_date": "20230102",
-                    },
-                ],
-            }
+            if url == "https://www.youtube.com/playlist?list=PL123":
+                assert self.options.get("extract_flat") is True
+                return self.FLAT
+            assert not self.options.get("extract_flat")
+            for episode_id, detail in self.DETAILS.items():
+                if url.endswith(episode_id):
+                    return detail
+            raise AssertionError(f"未预期的 URL: {url}")
 
     def fake_update_metadata(name, title, description, image):
         captured_metadata.update(
@@ -196,3 +211,40 @@ def test_youtube_episode_requires_ffmpeg(monkeypatch, tmp_path):
         assert "m4a" in str(exc)
     else:
         raise AssertionError("Expected missing ffmpeg to raise RuntimeError")
+
+
+def test_youtube_private_videos_are_dropped(monkeypatch):
+    """详情取不到的条目（私享/已删除）要丢弃。
+
+    否则它们会带着空发布时间进入待下载列表，每轮重试一次且永远失败。
+    """
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download):
+            if url == "https://www.youtube.com/playlist?list=PL123":
+                return {
+                    "title": "Channel",
+                    "entries": [
+                        {"id": "good", "url": "https://www.youtube.com/watch?v=good"},
+                        {"id": "private", "url": "https://www.youtube.com/watch?v=private"},
+                    ],
+                }
+            if url.endswith("private"):
+                return {}  # ignoreerrors 下私享视频返回空
+            return {"id": "good", "title": "Good video", "timestamp": 1_700_000_000}
+
+    monkeypatch.setattr(downloader, "YoutubeDL", FakeYoutubeDL, raising=False)
+    monkeypatch.setattr(downloader, "update_podcast_metadata", lambda *a: None)
+
+    episodes = asyncio.run(downloader._collect_youtube_episodes(_youtube_podcast()))
+
+    assert [episode["episode_id"] for episode in episodes] == ["good"]

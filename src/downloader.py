@@ -6,6 +6,7 @@ import contextlib
 import errno
 import logging
 import shutil
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -38,6 +39,8 @@ _cancel_downloads = threading.Event()
 DOWNLOADS_DIR = Path("downloads")
 # keep_latest 未配置时，首次抓取的集数上限（之后只跟进新发布的剧集）
 DEFAULT_FIRST_RUN_LATEST = 10
+# 采集播放列表时并发取视频详情的上限
+YOUTUBE_DETAIL_CONCURRENCY = 8
 AUDIO_EXTENSIONS = {
     ".m4a",
     ".mp3",
@@ -157,14 +160,55 @@ def _merge_yt_dlp_options(base: dict, extra: dict | None) -> dict:
     return merged
 
 
+@contextlib.contextmanager
+def _isolated_cookiefile(options: dict):
+    """给并发任务各发一份 cookie 副本。
+
+    yt-dlp 在关闭时会把 cookie 写回 cookiefile，多个实例同时用同一个文件会
+    相互覆盖，导致 CookieLoadError，严重时还会写坏用户的 cookie 文件。
+    副本用完即弃，本来也不需要把刷新后的 cookie 持久化。
+    """
+    cookiefile = options.get("cookiefile")
+    if not cookiefile:
+        yield options
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        replica = Path(tmpdir) / "cookies.txt"
+        shutil.copyfile(cookiefile, replica)
+        yield {**options, "cookiefile": str(replica)}
+
+
 def _extract_youtube_info(url: str, download: bool, options: dict) -> dict:
-    with YoutubeDL(options) as ydl:
+    with _isolated_cookiefile(options) as opts, YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=download) or {}
 
 
 
+async def _fetch_youtube_details(entries: list[dict], options: dict) -> list[dict]:
+    """并发取每个视频的详情，失败的用扁平条目兜底。
+
+    扁平列表里没有发布时间和简介（实测 timestamp 100% 为 None），而排序和
+    「最新 N 集」都依赖发布时间，所以每条都得取详情。yt-dlp 在播放列表内部是
+    串行处理的，100 条要十几分钟，这里改成受限并发。
+    """
+    semaphore = asyncio.Semaphore(YOUTUBE_DETAIL_CONCURRENCY)
+
+    async def fetch(entry: dict) -> dict | None:
+        async with semaphore:
+            detail = await asyncio.to_thread(
+                _extract_youtube_info, _youtube_source_url(entry), False, options
+            )
+        # 私享/已删除的视频在 ignoreerrors 下返回空 dict。丢弃而不是退回扁平
+        # 条目，否则它们会带着空发布时间进入待下载列表，每轮都失败一次。
+        return {**entry, **detail} if detail else None
+
+    details = await asyncio.gather(*[fetch(entry) for entry in entries])
+    return [detail for detail in details if detail]
+
+
 async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
-    options = {
+    base_options = {
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
@@ -172,11 +216,16 @@ async def _collect_youtube_episodes(podcast: Podcast) -> list[dict]:
         "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         **_youtube_base_options(),
     }
-    options = _merge_yt_dlp_options(options, podcast.get("yt_dlp_options"))
+    base_options = _merge_yt_dlp_options(base_options, podcast.get("yt_dlp_options"))
+
+    # 第一步：扁平列表，只拿 id / 标题 / 缩略图，几秒钟就能返回
     info = await asyncio.to_thread(
-        _extract_youtube_info, podcast["url"], False, options
+        _extract_youtube_info, podcast["url"], False, {**base_options, "extract_flat": True}
     )
-    entries = [entry for entry in (info.get("entries") or [info]) if entry]
+    flat_entries = [entry for entry in (info.get("entries") or [info]) if entry]
+
+    # 第二步：并发补齐发布时间和简介
+    entries = await _fetch_youtube_details(flat_entries, base_options)
 
     if info.get("title") or info.get("description") or _youtube_thumbnail(info):
         update_podcast_metadata(
